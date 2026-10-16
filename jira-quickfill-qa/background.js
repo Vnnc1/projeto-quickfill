@@ -2809,6 +2809,7 @@ const HANDLERS = {
   FIGMA_FRAMES: (p) => figmaFrames(p),
   STATUS_MAP: () => statusMap(),
   CHECK_UPDATE: (p) => checkUpdate(p),
+  MY_ACTIVITY: (p) => myActivity(p),
   NATIVE_PING: () => nativePing(),
   NATIVE_UPDATE: () => nativeUpdate(),
   SAVE_GOAL: (p) => saveGoal(p),
@@ -2920,6 +2921,62 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
   }
 });
 
+/* ------------------------------------------------------------------ */
+/* QA — demandas em que você atuou (qualquer status)                    */
+/* ------------------------------------------------------------------ */
+
+const _activity = { at: 0, data: null, pending: null };
+
+/**
+ * Últimos 30 dias, em qualquer status: atribuídas a você (agora ou antes), com horas suas ou que você
+ * moveu de status. Cada uma vem com a última mudança de status (de → para, quem, quando).
+ */
+async function myActivity(p = {}) {
+  if (!p.force && _activity.data && Date.now() - _activity.at < 2 * 60 * 1000) return _activity.data;
+  if (_activity.pending) return _activity.pending;
+  _activity.pending = (async () => {
+    const cfg = await getConfig();
+    const [meta, me] = await Promise.all([statusMeta(cfg), getMyself(cfg)]);
+    const spaces = await qaSpaces(cfg, meta);
+    const projects = spaces.map((x) => x.project).filter(Boolean);
+    const scope = projects.length ? `project in (${projects.map(jqlString).join(", ")}) AND ` : "";
+    const jql = `${scope}(assignee = currentUser() OR assignee WAS currentUser() OR worklogAuthor = currentUser()`
+      + ` OR status CHANGED BY currentUser() AFTER -30d) AND updated >= -30d ORDER BY updated DESC`;
+    const raw = await searchWithChangelog(jql, ["summary", "status", "issuetype", "parent", "project", "priority", "updated", "assignee", "duedate"], 300, cfg);
+    const issues = raw.map((i) => {
+      const f = i.fields || {};
+      const tr = statusTransitions(i.changelog?.histories);
+      const last = tr[tr.length - 1] || null;
+      const mineMoves = tr.filter((t) => t.by === me.accountId);
+      return {
+        key: i.key,
+        summary: f.summary || "",
+        project: f.project?.key || i.key.split("-")[0],
+        isSubtask: !!f.issuetype?.subtask,
+        type: f.issuetype?.name || "",
+        parentKey: f.parent?.key || null,
+        parentSummary: f.parent?.fields?.summary || "",
+        status: f.status?.name || "",
+        statusCategory: f.status?.statusCategory?.key || "",
+        priority: f.priority?.name || "",
+        assignee: f.assignee ? { id: f.assignee.accountId, name: f.assignee.displayName } : null,
+        mine: f.assignee?.accountId === me.accountId,
+        due: f.duedate || null,
+        updated: Date.parse(f.updated) || null,
+        lastMove: last ? { at: last.at, from: last.fromName, to: last.toName, by: last.byName, byMe: last.by === me.accountId } : null,
+        myLastMove: mineMoves.length ? { at: mineMoves[mineMoves.length - 1].at, to: mineMoves[mineMoves.length - 1].toName } : null,
+      };
+    });
+    return { generatedAt: Date.now(), url: cfg.baseUrl, issues, truncated: raw.length >= 300 };
+  })();
+  try {
+    const data = await _activity.pending;
+    _activity.at = Date.now();
+    _activity.data = data;
+    return data;
+  } finally { _activity.pending = null; }
+}
+
 /* ---------- Botão "Atualizar agora" (ajudante nativo do Windows) ---------- */
 
 const NATIVE_HOST = "com.quickfill.updater";
@@ -2937,6 +2994,52 @@ function nativeCall(msg) {
 const nativePing = async () => { try { await nativeCall({ action: "ping" }); return { available: true }; } catch (e) { return { available: false, reason: e.message }; } };
 /** Baixa e instala a versão nova deste pacote pelo ajudante; quem chama recarrega a extensão em seguida. */
 const nativeUpdate = () => nativeCall({ action: "update", package: ROLE });
+
+/* ---------- Notificação do Windows quando sair versão nova ----------
+ * Verifica a cada 3 h (o update.json fica em cache por 6 h) e ao abrir o Chrome. Uma notificação por versão.
+ * O botão da notificação atualiza pelo ajudante (um clique) ou, sem ele, abre as Opções para ativar. */
+
+const ROLE_LABEL = { qa: "QA", dev: "DEV", scrum: "SCRUM", design: "DESIGN" }[ROLE] || "";
+const NOTIF_ID = "qf-update";
+chrome.alarms?.create("qf-update-check", { delayInMinutes: 1, periodInMinutes: 180 });
+chrome.alarms?.onAlarm.addListener((a) => { if (a.name === "qf-update-check") notifyIfUpdate(); });
+chrome.runtime.onStartup?.addListener(() => notifyIfUpdate());
+
+const notify = (id, title, message, extra = {}) =>
+  chrome.notifications?.create(id, { type: "basic", iconUrl: "icons/icon128.png", title, message, priority: 1, ...extra });
+
+async function notifyIfUpdate() {
+  try {
+    const u = await checkUpdate({});
+    if (!u?.newer) return;
+    const { updateNotified } = await chrome.storage.local.get({ updateNotified: "" });
+    if (updateNotified === u.latest) return;
+    const nat = await nativePing();
+    await chrome.storage.local.set({ updateNotified: u.latest });
+    notify(NOTIF_ID, `QuickFill ${ROLE_LABEL} — versão ${u.latest} disponível`,
+      u.notes || "Há uma versão nova do QuickFill.",
+      { buttons: [{ title: nat.available ? "Atualizar agora" : "Como atualizar" }], requireInteraction: true });
+  } catch { /* sem rede ou sem update.json: tenta na próxima */ }
+}
+
+/** Botão (ou clique) na notificação: atualiza pelo ajudante; sem ele, abre as Opções na parte de ativação. */
+async function onUpdateNotification() {
+  chrome.notifications.clear(NOTIF_ID);
+  const nat = await nativePing();
+  if (!nat.available) { chrome.tabs.create({ url: chrome.runtime.getURL("options.html#atualizacao") }); return; }
+  notify("qf-updating", `QuickFill ${ROLE_LABEL}`, "Baixando e instalando a versão nova…");
+  try {
+    await nativeUpdate();
+    chrome.notifications.clear("qf-updating");
+    notify("qf-updated", `QuickFill ${ROLE_LABEL} atualizado`, "Pronto! A extensão foi recarregada com a versão nova.");
+    setTimeout(() => chrome.runtime.reload(), 800);
+  } catch (e) {
+    chrome.notifications.clear("qf-updating");
+    notify("qf-update-err", "Não deu para atualizar sozinho", `${e.message}. Abra o QuickFill e use “Copiar comando de atualização”.`);
+  }
+}
+chrome.notifications?.onButtonClicked.addListener((id) => { if (id === NOTIF_ID) onUpdateNotification(); });
+chrome.notifications?.onClicked.addListener((id) => { if (id === NOTIF_ID) onUpdateNotification(); });
 
 /* ---------- Aviso de nova versão (repositório) ---------- */
 

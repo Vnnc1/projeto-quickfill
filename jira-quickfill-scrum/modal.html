@@ -87,6 +87,7 @@
       <span class="spacebar-l">Período</span>
       <div class="seg" id="qaPeriod">
         <button data-p="today">Hoje</button>
+        <button data-p="yesterday" title="O dia útil anterior">Ontem</button>
         <button data-p="7" class="on">7 dias</button>
         <button data-p="14">14 dias</button>
         <button data-p="30">30 dias</button>
@@ -243,6 +244,18 @@
             <button id="btnCreateSingle" class="btn primary sm">Criar</button>
           </div>
         </div>
+
+        <section class="card nofold-x" id="recentCard" data-roles="qa">
+          <div class="card-t"><b>Suas demandas recentes</b>
+            <div class="seg" id="recentPeriod">
+              <button data-p="today" class="on">Hoje</button>
+              <button data-p="yesterday">Ontem</button>
+              <button data-p="7">7 dias</button>
+            </div>
+          </div>
+          <div id="recentBox"></div>
+          <button class="link" id="recentAll">ver no Painel</button>
+        </section>
 
         <div class="inline-create" id="evidenceBlock">
           <button class="link" id="btnShowEvidence">+ Evidência de teste / retorno ao DEV</button>
@@ -447,6 +460,10 @@
       <section class="pane hidden" data-pane="panel">
         <div class="panel-tools">
           <div class="seg" id="panelProject"></div>
+          <div class="seg" id="panelScope" title="Abertas no seu nome ou todas em que você atuou, em qualquer status">
+            <button data-scope="open" class="on">Abertas</button>
+            <button data-scope="all">Todas</button>
+          </div>
           <div class="seg" id="panelType">
             <button data-type="all" class="on">Todas</button>
             <button data-type="parent">Pai</button>

@@ -383,3 +383,5 @@ $("btnNative").addEventListener("click", async () => {
   catch { prompt("Copie o comando e cole no Win+R:", cmd); }
 });
 nativeStatus();
+
+if (location.hash === "#atualizacao") setTimeout(() => { $("atualizacao").scrollIntoView({ block: "center" }); $("atualizacao").classList.add("flash"); }, 300);

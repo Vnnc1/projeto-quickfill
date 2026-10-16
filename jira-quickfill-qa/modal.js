@@ -277,6 +277,7 @@ function setMode(mode, { restoring = false } = {}) {
   } else {
     showForm(!!state.selected);
     if (state.selected) applySingleContext(state.selected, null, { keepValues: true });
+    renderRecent();
   }
   $("scroll").scrollTop = 0;
   if (!restoring) touch();
@@ -1482,13 +1483,21 @@ function panelFiltered(scoped) {
 
 const QP = { period: "7" };
 try { QP.period = localStorage.getItem("qf.qaPeriod") || "7"; } catch { /* sem storage */ }
-const QP_LABEL = { today: "hoje", 7: "em 7 dias", 14: "em 14 dias", 30: "em 30 dias" };
-const qpDays = () => (QP.period === "today" ? 1 : Number(QP.period));
-const qpFrom = () => Date.parse(`${addDaysIso(todayISO(), -(qpDays() - 1))}T00:00:00`);
-/** Vence dentro do período, contando a partir de hoje (Hoje = vence hoje). */
+const QP_LABEL = { today: "hoje", yesterday: "ontem", 7: "em 7 dias", 14: "em 14 dias", 30: "em 30 dias" };
+const qpDays = () => (QP.period === "today" || QP.period === "yesterday" ? 1 : Number(QP.period));
+/** "Ontem" = o dia útil anterior (na segunda, a sexta). */
+const qpYesterday = () => businessStep(todayISO(), -1);
+/** Intervalo do período escolhido (ms). Ontem é só aquele dia; os outros vão até agora. */
+function qpRange() {
+  if (QP.period === "yesterday") { const y = qpYesterday(); return { from: Date.parse(`${y}T00:00:00`), to: Date.parse(`${y}T23:59:59.999`) }; }
+  return { from: Date.parse(`${addDaysIso(todayISO(), -(qpDays() - 1))}T00:00:00`), to: Infinity };
+}
+const qpFrom = () => qpRange().from;
+const inQp = (ms) => { const r = qpRange(); return !!ms && ms >= r.from && ms <= r.to; };
+/** Vence dentro do período, contando a partir de hoje (Hoje e Ontem = vence hoje). */
 const dueInPeriod = (i) => !!i.due && i.due >= todayISO() && i.due <= addDaysIso(todayISO(), qpDays() - 1);
 /** Teve alguma atualização no período. */
-const movedInPeriod = (i) => !!i.updated && Date.parse(i.updated) >= qpFrom();
+const movedInPeriod = (i) => !!i.updated && inQp(Date.parse(i.updated));
 
 function setQaPeriod(p) {
   QP.period = p;
@@ -1496,7 +1505,103 @@ function setQaPeriod(p) {
   try { localStorage.setItem("qf.qaPeriod", p); } catch { /* sem storage */ }
   if (state.mode === "panel") renderPanel();
   if (state.mode === "qaq") renderQaQueue();
-  if (state.mode === "day") loadDay(state.dayDate);
+  if (state.mode === "day") loadDay(p === "yesterday" ? qpYesterday() : p === "today" ? todayISO() : state.dayDate);
+}
+
+/* ---------- Demandas em que você atuou, em qualquer status (Painel › Todas e Tarefa › recentes) ---------- */
+
+const ACT = { data: null, seq: 0, recent: "today" };
+try { ACT.recent = localStorage.getItem("qf.recent") || "today"; } catch { /* sem storage */ }
+
+async function loadActivity({ force = false } = {}) {
+  const seq = ++ACT.seq;
+  if (!ACT.data) {
+    try { const { qaActivity } = await chrome.storage.local.get({ qaActivity: null }); if (qaActivity?.issues && !ACT.data) ACT.data = qaActivity; } catch { /* sem cache */ }
+    if (ACT.data) activityRendered();
+  }
+  if (!force && ACT.data && Date.now() - ACT.data.generatedAt < 2 * 60 * 1000) return activityRendered();
+  try {
+    const data = await send("MY_ACTIVITY", { force });
+    if (seq !== ACT.seq) return;
+    ACT.data = data;
+    chrome.storage.local.set({ qaActivity: data }).catch(() => {});
+    activityRendered();
+  } catch (e) {
+    if (state.mode === "panel" && state.panel.scope === "all" && !ACT.data) { $("panelBox").innerHTML = ""; note($("panelBox"), "err", e.message); }
+    else toast(e.message);
+  }
+}
+function activityRendered() {
+  if (state.mode === "panel" && state.panel.scope === "all") renderPanel();
+  if (state.mode === "single") renderRecent();
+}
+
+const dayLabel = (iso) => (iso === todayISO() ? "Hoje" : iso === addDaysIso(todayISO(), -1) ? "Ontem" : dayShort(iso));
+const CAT_TXT = { done: "Concluída", indeterminate: "Em andamento", new: "A fazer" };
+
+/** Linha de demanda com status atual, última mudança e quem estava com ela. */
+function activityRow(it, url) {
+  const right = el("span", "dm-right");
+  const st = el("span", `st-pill cat-${it.statusCategory || "x"}`, it.status || "—");
+  st.dataset.tip = CAT_TXT[it.statusCategory] || "";
+  const t = it.updated ? new Date(it.updated) : null;
+  right.append(st, el("span", "m-row-r", t ? `${pad(t.getHours())}:${pad(t.getMinutes())}` : ""));
+  const bits = [];
+  if (it.lastMove) bits.push(`${it.lastMove.from} → ${it.lastMove.to}${it.lastMove.byMe ? " · por você" : it.lastMove.by ? ` · por ${it.lastMove.by.split(" ")[0]}` : ""}`);
+  bits.push(it.mine ? "com você" : it.assignee ? `com ${it.assignee.name}` : "sem responsável");
+  if (it.parentKey) bits.push(`↳ ${it.parentKey}`);
+  const line = issueLine(it, right, bits.join(" · "), url);
+  line.querySelector(".m-row-top").prepend(el("span", `tt ${it.isSubtask ? "tt-sub" : "tt-task"}`, it.isSubtask ? "Sub" : "Pai"));
+  line.classList.add("clickable");
+  line.title = "Abrir na aba Tarefa";
+  line.addEventListener("click", () => openFromPanel(it));
+  return line;
+}
+
+/** Painel › Todas: tudo em que você atuou, no período escolhido, agrupado por dia. */
+function renderActivity(box) {
+  const P = state.panel;
+  if (!ACT.data) { box.innerHTML = `<p class="muted xs">Lendo as demandas em que você atuou…</p>`; loadActivity(); return; }
+  $("panelInfo").textContent = `atualizado ${since(ACT.data.generatedAt)}`;
+  const term = (P.q || "").trim().toLowerCase();
+  const list = ACT.data.issues.filter((i) => inSpace(i.key)
+    && (P.type === "all" || (P.type === "sub" ? i.isSubtask : !i.isSubtask))
+    && inQp(i.updated)
+    && (!term || [i.key, i.summary, i.parentKey, i.status].some((v) => String(v || "").toLowerCase().includes(term))));
+  const k = el("div", "quick-row");
+  const kp = (n, label) => { const b = el("div", "quick"); b.append(el("b", null, String(n)), el("span", null, label)); return b; };
+  k.append(kp(list.length, `atualizadas ${QP_LABEL[QP.period]}`),
+    kp(list.filter((i) => i.statusCategory === "done").length, "concluídas"),
+    kp(list.filter((i) => i.statusCategory === "indeterminate").length, "em andamento"),
+    kp(list.filter((i) => i.lastMove?.byMe || (i.myLastMove && inQp(i.myLastMove.at))).length, "você moveu"),
+    kp(list.filter((i) => !i.mine).length, "já com outra pessoa"));
+  box.appendChild(k);
+  const card = mCard("Todas as demandas em que você atuou", `${list.length} · qualquer status`);
+  let last = "";
+  for (const it of list.slice(0, 120)) {
+    const d = isoOfMs(it.updated);
+    if (d !== last) { last = d; card.appendChild(el("div", "group", dayLabel(d))); }
+    card.appendChild(activityRow(it, ACT.data.url));
+  }
+  if (!list.length) card.appendChild(el("div", "empty", term ? "Nada com essa busca." : `Nenhuma demanda sua atualizada ${QP_LABEL[QP.period]}.`));
+  if (list.length > 120) card.appendChild(el("p", "muted xs", `+ ${list.length - 120} — refine a busca.`));
+  box.appendChild(card);
+  if (ACT.data.truncated) note(box, "warn", "Mais de 300 demandas nos últimos 30 dias: mostrando as atualizadas mais recentemente.");
+}
+
+/** Aba Tarefa: as últimas demandas em que você atuou (Hoje · Ontem · 7 dias), para abrir com um clique. */
+function renderRecent() {
+  if (ROLE !== "qa") return;
+  const box = $("recentBox");
+  box.innerHTML = "";
+  document.querySelectorAll("#recentPeriod button").forEach((b) => b.classList.toggle("on", b.dataset.p === ACT.recent));
+  if (!ACT.data) { box.appendChild(el("p", "muted xs", "Carregando…")); loadActivity(); return; }
+  const t = todayISO(), y = businessStep(t, -1);
+  const pick = (i) => { const d = isoOfMs(i.updated); return ACT.recent === "today" ? d === t : ACT.recent === "yesterday" ? d === y : d >= addDaysIso(t, -6); };
+  const list = ACT.data.issues.filter(pick);
+  for (const it of list.slice(0, 8)) box.appendChild(activityRow(it, ACT.data.url));
+  if (!list.length) box.appendChild(el("p", "muted xs", ACT.recent === "today" ? "Nenhuma demanda sua atualizada hoje ainda." : "Nada nesse período."));
+  $("recentAll").textContent = list.length > 8 ? `ver as ${list.length} no Painel` : "ver no Painel";
 }
 
 function renderPanel() {
@@ -1522,7 +1627,9 @@ function renderPanel() {
   const list = panelFiltered(scoped);
   const box = $("panelBox");
   box.innerHTML = "";
-  try { localStorage.setItem("qf.panel", JSON.stringify({ project: P.project, type: P.type, quick: P.quick || "", q: P.q || "" })); } catch { /* sem storage */ }
+  try { localStorage.setItem("qf.panel", JSON.stringify({ project: P.project, type: P.type, quick: P.quick || "", q: P.q || "", scope: P.scope || "open" })); } catch { /* sem storage */ }
+  document.querySelectorAll("#panelScope button").forEach((b) => b.classList.toggle("on", b.dataset.scope === (P.scope || "open")));
+  if (P.scope === "all") return renderActivity(box);
   $("panelInfo").textContent = d.fetchedAt ? `atualizado ${since(d.fetchedAt)}` : "";
 
   /* --- atalhos: o que você quer ver agora --- */
@@ -1564,7 +1671,7 @@ function renderPanel() {
   kpis.classList.add("three");
   kpis.append(
     tile("overdue", k.overdue, "atrasadas", k.overdue ? "err" : ""),
-    tile("due", k.due, QP.period === "today" ? "vencem hoje" : `vencem em ${QP.period} dias`, k.due ? "warn" : ""),
+    tile("due", k.due, qpDays() === 1 ? "vencem hoje" : `vencem em ${QP.period} dias`, k.due ? "warn" : ""),
     tile("nodue", k.nodue, "sem data limite"),
   );
   box.appendChild(kpis);
@@ -1578,7 +1685,7 @@ function renderPanel() {
   t1.className = "card-t";
   t1.append(document.createTextNode("Distribuição por status"));
   const t1s = document.createElement("span");
-  const doneN = d.done ? d.done.filter((x) => (x.at || 0) >= qpFrom() && (!gspace.project || x.project === gspace.project)).length : d.kpi.doneWeek;
+  const doneN = d.done ? d.done.filter((x) => inQp(x.at) && (!gspace.project || x.project === gspace.project)).length : d.kpi.doneWeek;
   t1s.textContent = `✓ ${doneN} concluída${doneN === 1 ? "" : "s"} ${QP_LABEL[QP.period]}`;
   t1.appendChild(t1s);
   sum.appendChild(t1);
@@ -1631,7 +1738,7 @@ function renderPanel() {
   card.className = "card";
   const lt = document.createElement("div");
   lt.className = "card-t";
-  lt.append(document.createTextNode(P.status || (P.kpi === "overdue" ? "Atrasadas" : P.kpi === "due" ? (QP.period === "today" ? "Vencem hoje" : `Vencem em ${QP.period} dias`) : P.kpi === "nodue" ? "Sem data limite" : "Minhas demandas")));
+  lt.append(document.createTextNode(P.status || (P.kpi === "overdue" ? "Atrasadas" : P.kpi === "due" ? (qpDays() === 1 ? "Vencem hoje" : `Vencem em ${QP.period} dias`) : P.kpi === "nodue" ? "Sem data limite" : "Minhas demandas")));
   const lts = document.createElement("span");
   lts.textContent = `${list.length} de ${scoped.length}`;
   lt.appendChild(lts);
@@ -1754,7 +1861,26 @@ document.querySelectorAll("#panelType button").forEach((b) => b.addEventListener
   state.panel.status = "";
   renderPanel();
 }));
-$("panelRefresh").addEventListener("click", () => loadPanel({ force: true }));
+$("panelRefresh").addEventListener("click", () => (state.panel.scope === "all" ? loadActivity({ force: true }) : loadPanel({ force: true })));
+$("panelScope").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  state.panel.scope = b.dataset.scope;
+  renderPanel();
+  if (state.panel.scope === "all") loadActivity();
+});
+$("recentPeriod").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  ACT.recent = b.dataset.p;
+  try { localStorage.setItem("qf.recent", ACT.recent); } catch { /* sem storage */ }
+  renderRecent();
+});
+$("recentAll").addEventListener("click", () => {
+  state.panel.scope = "all";
+  setQaPeriod(ACT.recent === "today" ? "today" : ACT.recent === "yesterday" ? "yesterday" : "7");
+  setMode("panel");
+});
 try { $("sprintWrap").open = localStorage.getItem("qf.sprintWrap") === "1"; } catch { /* sem storage */ }
 $("sprintWrap").addEventListener("toggle", () => { try { localStorage.setItem("qf.sprintWrap", $("sprintWrap").open ? "1" : "0"); } catch { /* sem storage */ } });
 let panelSearchTimer = null;
@@ -2406,7 +2532,7 @@ async function loadDay(date, { force = false } = {}) {
   const seq = ++daySeq;
   $("dayBox").innerHTML = `<p class="muted xs">Carregando ${dayShort(date)}…</p>`;
   try {
-    const rep = await send("DAY_REPORT", { date, days: QP.period === "today" ? 1 : Number(QP.period), force });
+    const rep = await send("DAY_REPORT", { date, days: qpDays(), force });
     if (seq === daySeq) renderDay(rep);
   } catch (e) {
     if (seq !== daySeq) return;
@@ -5167,9 +5293,8 @@ function renderQaQueue() {
   const box = $("qaqBox");
   box.innerHTML = "";
   $("qqInfo").textContent = `atualizado ${since(d.generatedAt)}`;
-  const from = qpFrom();
   const rows = d.issues.filter((i) => (QQ.who === "all" || i.mine) && inSpace(i.key))
-    .map((i) => ({ i, age: businessAge(i.waitingSince), recent: (i.waitingSince || 0) >= from }))
+    .map((i) => ({ i, age: businessAge(i.waitingSince), recent: inQp(i.waitingSince) }))
     .sort((a, b) => (a.i.priority?.rank ?? 99) - (b.i.priority?.rank ?? 99) || b.age - a.age);
   const recent = rows.filter((r) => r.recent), older = rows.filter((r) => !r.recent);
   const k = el("div", "m-kpis four");
@@ -5197,7 +5322,7 @@ function renderQaQueue() {
     return c;
   };
   if (recent.length) box.appendChild(section(`Chegaram ${QP_LABEL[QP.period]}`, "prioridade, depois tempo esperando", recent));
-  if (older.length) box.appendChild(section("Esperando há mais tempo", `antes do período · ${older.length}`, older));
+  if (older.length) box.appendChild(section(QP.period === "yesterday" ? "Fora de ontem" : "Esperando há mais tempo", `fora do período · ${older.length}`, older));
   if (!rows.length) box.appendChild(el("div", "empty", "Nada esperando validação 🎉"));
   if (d.truncated) note(box, "warn", "Mais de 200 itens: mostrando os primeiros.");
 }
@@ -5657,6 +5782,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   $("spaceBar").classList.toggle("hidden", !["panel", "qaq", "day", "team"].includes(state.mode));
   $("qaPeriodBar").classList.toggle("hidden", !["panel", "qaq", "day"].includes(state.mode));
 
+  renderRecent();
   initBoards();
   const restored = await restore(defaults);
   const view = await resumeView();

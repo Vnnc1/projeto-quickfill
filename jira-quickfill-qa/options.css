@@ -96,3 +96,4 @@ img.logo { width: 38px; height: 38px; border-radius: 10px; background: none; box
 .sw-custom { width: 34px; height: 34px; border: none; background: none; padding: 0; cursor: pointer; }
 
 .native-box { padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.native-box.flash { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
