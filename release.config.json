@@ -1,6 +1,6 @@
 {
-  "repo": "https://github.com/Vnnc1/projeto-quickfill",
+  "repo": "https://github.com/Vnnc1/quickfill-jira",
   "branch": "master",
-  "notes": "Correção: a estimativa original não muda mais sozinha ao apontar horas — o trabalhado só acumula (mostra o total). Para mudar a estimativa, digite outro valor.",
+  "notes": "O repositório mudou de endereço (github.com/Vnnc1/quickfill-jira). As atualizações seguem iguais.",
   "private": false
 }

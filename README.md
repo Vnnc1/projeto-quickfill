@@ -17,10 +17,10 @@ Extensões do Chrome para o dia a dia da equipe no Jira (Meeds All e Sustentaç�
    - Tecle **Win + R**, cole a linha abaixo e tecle **Enter**:
 
      ```
-     powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/quickfill.ps1 | iex"
+     powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Vnnc1/quickfill-jira/master/dist/quickfill.ps1 | iex"
      ```
 
-   - **ou** baixe o [`atualizar-quickfill.bat`](https://github.com/Vnnc1/projeto-quickfill/raw/master/dist/atualizar-quickfill.bat) e dê dois cliques.
+   - **ou** baixe o [`atualizar-quickfill.bat`](https://github.com/Vnnc1/quickfill-jira/raw/master/dist/atualizar-quickfill.bat) e dê dois cliques.
 2. **Escolha o seu QuickFill:** digite `qa`, `dev`, `scrum`, `design` ou `todos` e tecle **Enter**.
    A extensão fica em **Documentos › QuickFill** e a pasta abre sozinha.
 3. **Carregue no Chrome:** abra `chrome://extensions`, ligue o **Modo do desenvolvedor** (canto superior direito),

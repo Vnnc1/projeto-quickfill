@@ -1,31 +1,31 @@
 {
-  "version": "4.3.1",
+  "version": "4.3.2",
   "private": false,
-  "repo": "https://github.com/Vnnc1/projeto-quickfill",
-  "installCommand": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"irm https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/quickfill.ps1 | iex\"",
-  "guide": "https://github.com/Vnnc1/projeto-quickfill#readme",
+  "repo": "https://github.com/Vnnc1/quickfill-jira",
+  "installCommand": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"irm https://raw.githubusercontent.com/Vnnc1/quickfill-jira/master/dist/quickfill.ps1 | iex\"",
+  "guide": "https://github.com/Vnnc1/quickfill-jira#readme",
   "date": "2026-10-16",
-  "notes": "Correção: a estimativa original não muda mais sozinha ao apontar horas — o trabalhado só acumula (mostra o total). Para mudar a estimativa, digite outro valor.",
+  "notes": "O repositório mudou de endereço (github.com/Vnnc1/quickfill-jira). As atualizações seguem iguais.",
   "packages": {
     "qa": {
-      "version": "4.3.1",
+      "version": "4.3.2",
       "folder": "jira-quickfill-qa",
-      "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-qa.zip"
+      "download": "https://raw.githubusercontent.com/Vnnc1/quickfill-jira/master/dist/jira-quickfill-qa.zip"
     },
     "dev": {
-      "version": "4.3.1",
+      "version": "4.3.2",
       "folder": "jira-quickfill-dev",
-      "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-dev.zip"
+      "download": "https://raw.githubusercontent.com/Vnnc1/quickfill-jira/master/dist/jira-quickfill-dev.zip"
     },
     "scrum": {
-      "version": "4.3.1",
+      "version": "4.3.2",
       "folder": "jira-quickfill-scrum",
-      "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-scrum.zip"
+      "download": "https://raw.githubusercontent.com/Vnnc1/quickfill-jira/master/dist/jira-quickfill-scrum.zip"
     },
     "design": {
-      "version": "4.3.1",
+      "version": "4.3.2",
       "folder": "jira-quickfill-design",
-      "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-design.zip"
+      "download": "https://raw.githubusercontent.com/Vnnc1/quickfill-jira/master/dist/jira-quickfill-design.zip"
     }
   }
 }

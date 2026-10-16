@@ -1,11 +1,11 @@
 # Como distribuir e atualizar os QuickFill na equipe
 
-Repositório **público**: <https://github.com/Vnnc1/projeto-quickfill> (branch `master`). Não precisa de
+Repositório **público**: <https://github.com/Vnnc1/quickfill-jira> (branch `master`). Não precisa de
 token nem de conta no GitHub para instalar ou atualizar.
 
 ## Para a equipe: mande só isto
 
-> **Instalar o QuickFill:** abra <https://github.com/Vnnc1/projeto-quickfill> e siga o "Instalar (1 minuto)".
+> **Instalar o QuickFill:** abra <https://github.com/Vnnc1/quickfill-jira> e siga o "Instalar (1 minuto)".
 
 Não precisa mandar arquivo nenhum. O instalador sempre baixa a versão mais nova.
 

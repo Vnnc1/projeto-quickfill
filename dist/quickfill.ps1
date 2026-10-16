@@ -20,8 +20,8 @@ try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
 if (-not $ExtId -and $env:QF_EXT_ID) { $ExtId = $env:QF_EXT_ID }
 if (-not $Pacotes -and $env:QF_PACOTES) { $Pacotes = $env:QF_PACOTES }
 
-$UpdateUrl = "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/update.json"
-$ScriptUrl = "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/quickfill.ps1"
+$UpdateUrl = "https://raw.githubusercontent.com/Vnnc1/quickfill-jira/master/update.json"
+$ScriptUrl = "https://raw.githubusercontent.com/Vnnc1/quickfill-jira/master/dist/quickfill.ps1"
 $HostName  = "com.quickfill.updater"
 # Pasta Documentos da pessoa (ex.: C:\Users\Fernanda\Documents\QuickFill) — respeita Documentos no OneDrive
 $Documentos = [Environment]::GetFolderPath("MyDocuments")
@@ -138,7 +138,7 @@ try {
     $pkg = [string]$msg.package
     if ($pkg -notmatch '^(qa|dev|scrum|design)$') { throw "Pacote inválido." }
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $code = Invoke-RestMethod -Uri ("https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/quickfill.ps1?t=" + [DateTimeOffset]::Now.ToUnixTimeSeconds()) -UseBasicParsing
+    $code = Invoke-RestMethod -Uri ("https://raw.githubusercontent.com/Vnnc1/quickfill-jira/master/dist/quickfill.ps1?t=" + [DateTimeOffset]::Now.ToUnixTimeSeconds()) -UseBasicParsing
     & ([scriptblock]::Create($code)) -Pacotes $pkg -Silencioso *> $log
     Responder @{ ok = $true }
     exit 0
@@ -148,7 +148,7 @@ try {
   Responder @{ ok = $false; error = $_.Exception.Message }
 }
 '@
-  Set-Content -Path (Join-Path $HostDir "host.ps1") -Value $hostPs1.Replace("https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/quickfill.ps1", $ScriptUrl) -Encoding UTF8
+  Set-Content -Path (Join-Path $HostDir "host.ps1") -Value $hostPs1.Replace("https://raw.githubusercontent.com/Vnnc1/quickfill-jira/master/dist/quickfill.ps1", $ScriptUrl) -Encoding UTF8
   Set-Content -Path (Join-Path $HostDir "host.bat") -Value "@echo off`r`npowershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"%~dp0host.ps1`"" -Encoding ASCII
   $manifest = [ordered]@{ name = $HostName; description = "Atualizador do QuickFill"; path = (Join-Path $HostDir "host.bat"); type = "stdio";
     allowed_origins = @($ids | ForEach-Object { "chrome-extension://$_/" }) }
