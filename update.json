@@ -1,27 +1,27 @@
 {
-  "version": "4.0.2",
+  "version": "4.0.3",
   "private": true,
   "repo": "https://github.com/Vnnc1/projeto-quickfill",
   "date": "2026-10-16",
-  "notes": "Atualização de teste: instalação na pasta Documentos.",
+  "notes": "Novos ícones: DESIGN (paleta) e SCRUM (quadro kanban).",
   "packages": {
     "qa": {
-      "version": "4.0.2",
+      "version": "4.0.3",
       "folder": "jira-quickfill-qa",
       "download": "https://api.github.com/repos/Vnnc1/projeto-quickfill/contents/dist/jira-quickfill-qa.zip?ref=master"
     },
     "dev": {
-      "version": "4.0.2",
+      "version": "4.0.3",
       "folder": "jira-quickfill-dev",
       "download": "https://api.github.com/repos/Vnnc1/projeto-quickfill/contents/dist/jira-quickfill-dev.zip?ref=master"
     },
     "scrum": {
-      "version": "4.0.2",
+      "version": "4.0.3",
       "folder": "jira-quickfill-scrum",
       "download": "https://api.github.com/repos/Vnnc1/projeto-quickfill/contents/dist/jira-quickfill-scrum.zip?ref=master"
     },
     "design": {
-      "version": "4.0.2",
+      "version": "4.0.3",
       "folder": "jira-quickfill-design",
       "download": "https://api.github.com/repos/Vnnc1/projeto-quickfill/contents/dist/jira-quickfill-design.zip?ref=master"
     }

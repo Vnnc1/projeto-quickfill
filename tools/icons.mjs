@@ -3,8 +3,8 @@
  * Cada perfil tem cor e símbolo próprios:
  *   QA     — azul, lupa com ✓ (validação)
  *   DEV    — verde, </> (código)
- *   SCRUM  — âmbar, seta circular (ciclo da sprint)
- *   DESIGN — rosa, curva de Bézier com alças (ferramenta caneta)
+ *   SCRUM  — âmbar, quadro kanban
+ *   DESIGN — rosa, paleta de pintor
  */
 
 import { deflateSync } from "node:zlib";
@@ -52,12 +52,16 @@ const ring = (cx, cy, r, w, from = 0, to = 360) => (x, y) => {
 };
 const poly = (pts) => (x, y) => inPoly(x, y, pts);
 const disc = (cx, cy, r) => (x, y) => Math.hypot(x - cx, y - cy) <= r;
+/** Retângulo de cantos arredondados. */
+const rbox = (x0, y0, x1, y1, r) => (x, y) => { const cx = Math.min(Math.max(x, x0 + r), x1 - r), cy = Math.min(Math.max(y, y0 + r), y1 - r); return Math.hypot(x - cx, y - cy) <= r; };
 const square = (cx, cy, h) => (x, y) => Math.abs(x - cx) <= h && Math.abs(y - cy) <= h;
 const bezier = (p0, p1, p2, p3, n = 40) => Array.from({ length: n + 1 }, (_, i) => {
   const t = i / n, u = 1 - t;
   return [u * u * u * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t * t * t * p3[0],
           u * u * u * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t * t * t * p3[1]];
 });
+
+export const SHAPES = { stroke, ring, poly, disc, square, bezier };
 
 const ICONS = {
   qa: { top: [87, 157, 255], bottom: [40, 98, 214], glyph: [
@@ -68,20 +72,24 @@ const ICONS = {
     stroke([[0.36, 0.32], [0.2, 0.5], [0.36, 0.68]], 0.085), stroke([[0.64, 0.32], [0.8, 0.5], [0.64, 0.68]], 0.085),
     stroke([[0.55, 0.26], [0.45, 0.74]], 0.075),
   ] },
+  // Quadro kanban: três colunas com cards
   scrum: { top: [245, 205, 71], bottom: [214, 140, 18], glyph: [
-    ring(0.5, 0.5, 0.25, 0.085, 35, 320), poly([[0.66, 0.2], [0.82, 0.37], [0.6, 0.41]]),
-    disc(0.5, 0.5, 0.06),
+    rbox(0.2, 0.22, 0.36, 0.42, 0.03), rbox(0.2, 0.46, 0.36, 0.62, 0.03), rbox(0.2, 0.66, 0.36, 0.78, 0.03),
+    rbox(0.42, 0.22, 0.58, 0.48, 0.03), rbox(0.42, 0.52, 0.58, 0.66, 0.03),
+    rbox(0.64, 0.22, 0.8, 0.36, 0.03),
   ] },
-  design: { top: [231, 116, 187], bottom: [158, 60, 170], glyph: [
-    stroke(bezier([0.22, 0.72], [0.3, 0.25], [0.7, 0.75], [0.78, 0.28]), 0.07),
-    stroke([[0.22, 0.72], [0.3, 0.25]], 0.03), stroke([[0.78, 0.28], [0.7, 0.75]], 0.03),
-    disc(0.3, 0.25, 0.05), disc(0.7, 0.75, 0.05), square(0.22, 0.72, 0.06), square(0.78, 0.28, 0.06),
-  ] },
+  // Paleta de pintor com as "tintas" vazadas (furos mostram o fundo rosa)
+  design: { top: [231, 116, 187], bottom: [158, 60, 170], glyph: [disc(0.5, 0.5, 0.31)],
+    cut: [disc(0.36, 0.39, 0.058), disc(0.52, 0.3, 0.058), disc(0.67, 0.41, 0.058), disc(0.34, 0.58, 0.058), disc(0.6, 0.65, 0.085), disc(0.75, 0.73, 0.09)] },
 };
 
 /** Desenha o ícone do perfil no tamanho pedido (4×4 amostras por pixel para suavizar as bordas). */
 export function renderIcon(role, size) {
-  const ic = ICONS[role];
+  return renderSpec(ICONS[role], size);
+}
+
+/** Desenha um ícone a partir de { top, bottom, glyph: [formas], cut: [formas que furam o desenho] }. */
+export function renderSpec(ic, size) {
   const buf = Buffer.alloc(size * size * 4);
   const S = 4;
   const radius = size <= 16 ? 0.2 : 0.22;
@@ -92,7 +100,7 @@ export function renderIcon(role, size) {
         const x = (px + (sx + 0.5) / S) / size, y = (py + (sy + 0.5) / S) / size;
         if (!roundRect(x, y, radius)) continue;
         bg++;
-        if (ic.glyph.some((g) => g(x, y))) fg++;
+        if (ic.glyph.some((g) => g(x, y)) && !(ic.cut || []).some((g) => g(x, y))) fg++;
       }
       const t = py / Math.max(1, size - 1);
       const base = ic.top.map((c, i) => Math.round(c + (ic.bottom[i] - c) * t));
