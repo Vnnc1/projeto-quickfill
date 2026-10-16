@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Jira QuickFill DEV — Meu progresso",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "DEV: seu dia e seu progresso no Jira — meta do dia, sequência, histórico, suas demandas (com o QA, voltaram, entregues) e a equipe.",
   "permissions": [
     "storage",
@@ -10,7 +10,8 @@
     "sidePanel"
   ],
   "host_permissions": [
-    "https://*.atlassian.net/*"
+    "https://*.atlassian.net/*",
+    "https://api.github.com/*"
   ],
   "background": {
     "service_worker": "background.js",

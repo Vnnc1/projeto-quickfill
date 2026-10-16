@@ -17,7 +17,7 @@ import { renderIcon, ICON_SIZES } from "./tools/icons.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SRC = join(ROOT, "jira-quickfill-qa");
-const VERSION = "4.0.0";
+const VERSION = "4.0.1";
 
 const ROLES = {
   qa: {
@@ -63,9 +63,14 @@ if (!existsSync(RELEASE_FILE)) writeFileSync(RELEASE_FILE, JSON.stringify({ repo
 const RELEASE = JSON.parse(readFileSync(RELEASE_FILE, "utf8"));
 const GH = String(RELEASE.repo || "").match(/github\.com\/([^/]+)\/([^/#?]+?)(?:\.git)?\/?$/);
 const BRANCH = RELEASE.branch || "main";
-const UPDATE_URL = RELEASE.updateUrl || (GH ? `https://raw.githubusercontent.com/${GH[1]}/${GH[2]}/${BRANCH}/update.json` : "");
+// Repositório privado: arquivos lidos pela API do GitHub com um token só de leitura (ver DISTRIBUICAO.md).
+const PRIVATE = RELEASE.private !== false;
+const ghFile = (path) => (PRIVATE
+  ? `https://api.github.com/repos/${GH[1]}/${GH[2]}/contents/${path}?ref=${BRANCH}`
+  : `https://raw.githubusercontent.com/${GH[1]}/${GH[2]}/${BRANCH}/${path}`);
+const UPDATE_URL = RELEASE.updateUrl || (GH ? ghFile("update.json") : "");
 const downloadOf = (dir) => (RELEASE.downloadBase ? `${RELEASE.downloadBase.replace(/\/+$/, "")}/${dir}.zip`
-  : GH ? `https://github.com/${GH[1]}/${GH[2]}/raw/${BRANCH}/dist/${dir}.zip` : "");
+  : GH ? ghFile(`dist/${dir}.zip`) : "");
 
 const PER_ROLE = new Set(["lib/role.js", "manifest.json", "content.js", "content.css", "README.md", ...ICON_SIZES.map((n) => `icons/icon${n}.png`)]);
 
@@ -101,7 +106,8 @@ function manifest(role, r) {
   const hosts = (src.host_permissions || []).filter((h) => !h.includes("figma.com"));
   return JSON.stringify({
     ...src,
-    host_permissions: role === "design" ? [...hosts, "https://api.figma.com/*"] : hosts,
+    // api.github.com: aviso de nova versão do repositório privado · api.figma.com: telas do Figma (DESIGN)
+    host_permissions: [...hosts.filter((h) => !h.includes("github.com")), "https://api.github.com/*", ...(role === "design" ? ["https://api.figma.com/*"] : [])],
     icons,
     name: r.name,
     version: VERSION,
@@ -173,6 +179,8 @@ for (const [role, r] of Object.entries(ROLES)) {
 /* ---------- update.json e instalador da equipe ---------- */
 const update = {
   version: VERSION,
+  private: PRIVATE,
+  repo: RELEASE.repo || "",
   date: new Date().toISOString().slice(0, 10),
   notes: RELEASE.notes || "",
   packages: Object.fromEntries(Object.entries(ROLES).map(([role, r]) => [role, { version: VERSION, folder: r.dir, download: downloadOf(r.dir) }])),

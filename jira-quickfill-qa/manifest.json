@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Jira QuickFill QA",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "QA: preenche datas, estimativa, apontamento e status de subtarefas (Testes Manuais), em uma tarefa ou em lote, com painel, equipe e meu dia.",
   "permissions": [
     "storage",
@@ -10,7 +10,8 @@
     "sidePanel"
   ],
   "host_permissions": [
-    "https://*.atlassian.net/*"
+    "https://*.atlassian.net/*",
+    "https://api.github.com/*"
   ],
   "background": {
     "service_worker": "background.js",

@@ -72,7 +72,7 @@ const FIELDS = ["baseUrl", "email", "apiToken", "startDateFieldId", "logWorkComm
   "scrumStaleDays", "scrumWipLimit", "designLabels", "designWeeklyGoal",
   "stageFeito", "stageDeploy", "stagePrd", "stageQa", "stageReopen", "designDoing", "designReview", "designDelivered",
   "feitoThreshold", "deployIssueType", "deploySummary", "deployers", "figmaUrl", "figmaToken", "qaRejectCategories",
-  "stageValidated", "stageBlocked", "qaPeople", "designProjects", "smPeople", "ignorePeople", "designPeople", "accentColor", "openMode", "updateUrl"];
+  "stageValidated", "stageBlocked", "qaPeople", "designProjects", "smPeople", "ignorePeople", "designPeople", "accentColor", "openMode", "updateUrl", "updateToken"];
 // Todas nascem ligadas: só ficam desligadas se tiverem sido salvas como false.
 const FLAGS = ["assignSelf", "skipWeekends", "estimateFromSpent", "zeroRemainingOnDone"];
 const DEFAULT_VALUES = { workStart: "11:00", workEnd: "17:00", dailyCapHours: "6", dailyGoalHours: "4", defaultStoryPoints: "1",
@@ -226,7 +226,7 @@ const SHARE_KEYS = [...FIELDS, ...FLAGS, "teamPeople", "batchBoardId", "sustBoar
 
 $("btnExport").addEventListener("click", async () => {
   const data = await chrome.storage.sync.get(SHARE_KEYS);
-  if (!$("exportToken").checked) { delete data.apiToken; delete data.figmaToken; }
+  if (!$("exportToken").checked) { delete data.apiToken; delete data.figmaToken; delete data.updateToken; }
   const blob = new Blob([JSON.stringify({ kind: "jira-quickfill-config", version: 1, from: ROLE, exportedAt: new Date().toISOString(), data }, null, 2)],
     { type: "application/json" });
   const a = document.createElement("a");

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Jira QuickFill DESIGN — HUs e metas",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "DESIGN: suas HUs por etapa (fila, em design, revisão, com o dev), quem está aguardando design, meta semanal de entregas, seu dia e a equipe.",
   "permissions": [
     "storage",
@@ -11,6 +11,7 @@
   ],
   "host_permissions": [
     "https://*.atlassian.net/*",
+    "https://api.github.com/*",
     "https://api.figma.com/*"
   ],
   "background": {

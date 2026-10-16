@@ -2,3 +2,5 @@
 node_modules/
 .DS_Store
 Thumbs.db
+# token de leitura gravado pelo instalador (nunca no repositório)
+**/update.local.json

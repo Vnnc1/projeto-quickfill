@@ -65,6 +65,7 @@ const DEFAULTS = {
   openMode: "panel",                   // "panel" = painel lateral do Chrome · "modal" = modal grande sobre o Jira
   accentColor: "",                     // cor de destaque (vazio = a do perfil)
   updateUrl: "",                       // endereço do update.json (vazio = o do pacote)
+  updateToken: "",                     // token de leitura do repositório privado (opcional; o instalador já cuida)
   designPeople: '[{"name":"Amanda Saraiva"}]',   // Design UI/UX (fora das sugestões de implementação)
   smPeople: '[{"name":"Marjorie Pinheiro"}]',   // Scrum Master / liderança (coluna própria em Pessoas)
   ignorePeople: '[{"name":"Teste Novetech"}]',  // contas de teste/automação que não entram em Pessoas
@@ -2922,6 +2923,19 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
 const semver = (v) => String(v || "0").split(".").map((x) => parseInt(x, 10) || 0);
 const newer = (a, b) => { const x = semver(a), y = semver(b); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
 
+/**
+ * Token de leitura do repositório privado: o instalador (atualizar-quickfill) grava em
+ * update.local.json dentro da pasta da extensão; também pode ser colado nas Opções.
+ */
+async function updateToken(cfg) {
+  if (cfg.updateToken) return String(cfg.updateToken).trim();
+  try {
+    const res = await fetch(chrome.runtime.getURL("update.local.json"), { cache: "no-store" });
+    if (res.ok) return String((await res.json()).token || "").trim();
+  } catch { /* arquivo não existe: instalado sem o instalador */ }
+  return "";
+}
+
 /** Lê o update.json do repositório (no máximo a cada 6 h) e diz se há versão nova deste pacote. */
 async function checkUpdate(p = {}) {
   const cfg = await getConfig();
@@ -2930,11 +2944,17 @@ async function checkUpdate(p = {}) {
   if (!url) return { configured: false, current };
   const { updateCheck } = await chrome.storage.local.get({ updateCheck: null });
   if (!p.force && updateCheck?.url === url && Date.now() - updateCheck.at < 6 * 3600 * 1000) return { ...updateCheck.data, current, newer: newer(updateCheck.data.latest, current) };
-  const res = await fetch(`${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`, { cache: "no-store" });
+  const token = await updateToken(cfg);
+  const headers = url.includes("api.github.com")
+    ? { Accept: "application/vnd.github.raw+json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+    : {};
+  if (url.includes("api.github.com") && !token) return { configured: true, needsToken: true, current };
+  const res = await fetch(`${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`, { cache: "no-store", headers });
+  if (res.status === 401 || res.status === 403 || res.status === 404) return { configured: true, badToken: true, current };
   if (!res.ok) throw new Error(`Não consegui ler o aviso de versão (${res.status}).`);
   const json = await res.json();
   const pkg = json.packages?.[ROLE] || {};
-  const data = { configured: true, latest: pkg.version || json.version, notes: json.notes || "", download: pkg.download || json.download || "",
+  const data = { configured: true, private: !!json.private, repo: json.repo || "", latest: pkg.version || json.version, notes: json.notes || "", download: pkg.download || json.download || "",
     folder: pkg.folder || "", date: json.date || "" };
   await chrome.storage.local.set({ updateCheck: { url, at: Date.now(), data } });
   return { ...data, current, newer: newer(data.latest, current) };

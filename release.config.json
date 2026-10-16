@@ -1,5 +1,6 @@
 {
-  "repo": "",
-  "branch": "main",
-  "notes": ""
+  "repo": "https://github.com/Vnnc1/projeto-quickfill",
+  "branch": "master",
+  "notes": "Repositório privado: aviso de versão e instalador com token de leitura.",
+  "private": true
 }

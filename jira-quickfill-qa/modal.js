@@ -5424,7 +5424,12 @@ async function checkForUpdate() {
     const box = $("updateBox");
     box.querySelector("span").textContent = `Nova versão ${u.latest} disponível — você está na ${u.current}.${u.notes ? ` ${u.notes}` : ""}`;
     box.classList.remove("hidden");
-    $("btnUpdateGet").onclick = (e) => (u.download ? openIssue(u.download, e) : toast("O update.json não tem o link de download."));
+    // Repositório privado: quem baixa é o instalador (com o token); o botão abre o repositório no GitHub
+    $("btnUpdateGet").textContent = u.private ? "Ver no GitHub" : "Baixar";
+    $("btnUpdateGet").onclick = (e) => {
+      const url = u.private ? u.repo : u.download;
+      return url ? openIssue(url, e) : toast("O update.json não tem o link.");
+    };
     $("btnUpdateHow").onclick = () => toast("Rode o atualizar-quickfill.bat (pasta dist do repositório). Depois clique em “Recarregar extensão” que aparece aqui no topo.", "info");
     $("updateClose").onclick = () => { box.classList.add("hidden"); chrome.storage.local.set({ updateDismissed: u.latest }).catch(() => {}); };
   } catch { /* sem aviso: segue normal */ }
