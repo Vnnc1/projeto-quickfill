@@ -31,7 +31,8 @@ aviso de versão usam um **token só de leitura, só deste repositório**, criad
    `atualizar-quickfill.bat` e `atualizar-quickfill.ps1`. Os dois precisam ficar na mesma pasta.
 2. A pessoa dá dois cliques no **`atualizar-quickfill.bat`**, cola o **token** quando pedir e escolhe o perfil:
    `qa`, `dev`, `scrum`, `design` ou `todos`.
-   - Os QuickFill ficam em `C:\Users\<pessoa>\QuickFill\<pasta>`.
+   - Os QuickFill ficam na pasta **Documentos** da pessoa: `C:\Users\<pessoa>\Documents\QuickFill\<pasta>`
+     (ex.: `C:\Users\Fernanda\Documents\QuickFill\jira-quickfill-dev`). Se o Documentos estiver no OneDrive, vai para lá.
    - O token fica guardado **criptografado** para aquele usuário do Windows; o instalador não pergunta de novo.
 3. No Chrome: `chrome://extensions` › ligar **Modo do desenvolvedor** › **Carregar sem compactação** › escolher a pasta.
 4. Nas **Opções** da extensão: URL do Jira, e-mail e token do Jira. Se preferir, use **Importar configuração**

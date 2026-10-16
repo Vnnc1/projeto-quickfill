@@ -13,7 +13,10 @@
 param([string]$Pacotes = "", [switch]$TrocarToken)
 
 $UpdateUrl = "__UPDATE_URL__"
-$Destino   = Join-Path $env:USERPROFILE "QuickFill"
+# Pasta Documentos da pessoa (ex.: C:\Users\Fernanda\Documents\QuickFill) — respeita Documentos no OneDrive
+$Documentos = [Environment]::GetFolderPath("MyDocuments")
+if (-not $Documentos) { $Documentos = Join-Path $env:USERPROFILE "Documents" }
+$Destino   = Join-Path $Documentos "QuickFill"
 $TokenFile = Join-Path $Destino ".token"
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
