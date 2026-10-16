@@ -89,3 +89,21 @@ export function humanize(minutes) {
   if (!minutes) return "—";
   return `${formatJira(minutes)} (${minutes} min)`;
 }
+
+/**
+ * Qual estimativa gravar. Estimativa existente nunca muda sozinha:
+ * - digitou um valor diferente da atual → grava o novo;
+ * - digitou o mesmo valor, ou deixou vazio e a tarefa já tem estimativa → não mexe ("");
+ * - vazio e a tarefa sem estimativa → usa o trabalhado (se fromSpent).
+ */
+export function pickEstimate({ typed = "", current = "", spent = "", fromSpent = true } = {}) {
+  const t = String(typed || "").trim();
+  const cur = parseDuration(current);
+  const hasCurrent = cur.ok && cur.minutes > 0;
+  if (t) {
+    const p = parseDuration(t);
+    return hasCurrent && p.ok && p.minutes === cur.minutes ? "" : t;
+  }
+  if (hasCurrent) return "";
+  return fromSpent && String(spent || "").trim() ? String(spent).trim() : "";
+}

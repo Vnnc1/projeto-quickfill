@@ -389,7 +389,27 @@ function updateEstimateMatch() {
   const sp = parseDuration($("spent").value);
   el.className = "match";
   if (!sp.ok || !sp.minutes) { el.textContent = ""; return; }
-  if (!$("estimate").value.trim()) {
+  // Tarefa com estimativa: ela não muda sozinha — o trabalhado só acumula.
+  const cur = !isSpace(state.mode) && state.selected ? state.selected.current : null;
+  const curEst = cur ? parseDuration(cur.originalEstimate) : null;
+  if (curEst?.ok && curEst.minutes) {
+    const before = parseDuration(cur.timeSpent).minutes || 0;
+    const total = before + sp.minutes;
+    const acc = before ? `trabalhado ${fmtDur(before)} + ${fmtDur(sp.minutes)} = ${fmtDur(total)}` : `trabalhado ${fmtDur(total)}`;
+    const typed = $("estimate").value.trim();
+    if (typed && est.ok && est.minutes !== curEst.minutes) {
+      el.textContent = `Estimativa muda de ${fmtDur(curEst.minutes)} para ${fmtDur(est.minutes)} · ${acc}.`;
+      el.classList.add(total > est.minutes ? "warn" : "info");
+    } else {
+      el.textContent = `Estimativa mantida (${fmtDur(curEst.minutes)}) · ${acc}${total > curEst.minutes ? ` · passa ${fmtDur(total - curEst.minutes)}` : ""}.`;
+      el.classList.add(total > curEst.minutes ? "warn" : "ok");
+    }
+    return;
+  }
+  if (!$("estimate").value.trim() && isSpace(state.mode)) {
+    el.textContent = `Estimativa vazia → mantém a de cada subtarefa; só preenche (${fmtDur(sp.minutes)}) onde não tem.`;
+    el.classList.add("info");
+  } else if (!$("estimate").value.trim()) {
     el.textContent = `Estimativa vazia → será gravada igual ao trabalhado (${fmtDur(sp.minutes)}).`;
     el.classList.add("info");
   } else if (est.ok && est.minutes === sp.minutes) {
@@ -2747,11 +2767,19 @@ async function applySingle() {
       startFieldId: ctx.startField?.id || null,
       startFieldType: ctx.startField?.type || "date",
       currentStartDate: ctx.current.startDate || null,
+      currentEstimate: ctx.current.originalEstimate || null,
+      currentSpent: ctx.current.timeSpent || null,
       storyFieldId: ctx.storyField?.id || null,
       transitionId: sel.value || null,
       transitionName: sel.selectedOptions[0]?.dataset.name || "",
       finalize: sel.selectedOptions[0]?.dataset.cat === "done",
     });
+    // Mantém o "trabalhado" e a estimativa atuais em dia para o próximo apontamento na mesma tarefa.
+    const payload = commonPayload();
+    const added = parseDuration(payload.timeSpent).minutes || 0;
+    if (added) ctx.current.timeSpent = fmtDur((parseDuration(ctx.current.timeSpent).minutes || 0) + added);
+    const wrote = (res.steps || []).find((s) => s.step === "Campos" && s.ok)?.detail?.match(/estimativa ([\dhmdw ]+)/);
+    if (wrote) ctx.current.originalEstimate = wrote[1].trim();
     state.lastResult = { kind: "single", data: res };
     renderSingleResult(res);
     toast(res.ok ? `${res.key} atualizada.` : `${res.key}: algumas etapas falharam.`, res.ok ? "ok" : "err");
@@ -2779,6 +2807,8 @@ async function applyBatch() {
         key: t.key, summary: t.summary, status: t.status,
         startField: t.startField, storyField: t.storyField, transitions: t.transitions,
         currentStartDate: t.current?.startDate || null,
+        currentEstimate: t.current?.originalEstimate || null,
+        currentSpent: t.current?.timeSpent || null,
       })),
     });
     state.lastResult = { kind: "batch", data: res };

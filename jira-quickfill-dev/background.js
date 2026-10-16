@@ -1,4 +1,4 @@
-import { parseDuration, formatJira } from "./lib/duration.js";
+import { parseDuration, formatJira, pickEstimate } from "./lib/duration.js";
 import { buildPlan, parseHM, addDays, fmtHM, fmtDur, DEFAULT_WORKDAY } from "./lib/schedule.js";
 import { ROLE, UPDATE_URL } from "./lib/role.js";
 import { stageFrom, termsRx, normName } from "./lib/teamstats.js";
@@ -443,6 +443,11 @@ async function applyToSubtask(payload) {
   }
   if (storySkipped) {
     steps.push({ step: "Story points", ok: false, detail: "Esta subtarefa não tem campo de story points editável na tela." });
+  }
+  if (!est.jira && spent.minutes && payload.currentEstimate) {
+    const before = parseDuration(payload.currentSpent).minutes || 0;
+    steps.push({ step: "Estimativa", ok: true,
+      detail: `mantida (${payload.currentEstimate}) · trabalhado ${formatJira(before)} + ${formatJira(spent.minutes)} = ${formatJira(before + spent.minutes)}` });
   }
 
   /* 2. Worklog — o "controle de tempo" real, já encaixado na jornada.
@@ -1245,12 +1250,14 @@ async function previewWorkday(p) {
   return planWorklogs({ startDate: p.startDate, startTime: p.startTime, items, force: !!p.force });
 }
 
-/** Estimativa: se vazia e houver tempo trabalhado, usa o tempo trabalhado. */
-function resolveEstimate(payload, cfg) {
-  const typed = (payload.originalEstimate || "").trim();
-  if (typed) return typed;
-  if (cfg.estimateFromSpent !== false && (payload.timeSpent || "").trim()) return payload.timeSpent;
-  return "";
+/** Estimativa a gravar — a existente nunca muda sozinha (ver pickEstimate). */
+function resolveEstimate(payload, cfg, current = payload.currentEstimate) {
+  return pickEstimate({
+    typed: payload.originalEstimate,
+    current,
+    spent: payload.timeSpent,
+    fromSpent: cfg.estimateFromSpent !== false,
+  });
 }
 
 /** Aplicação de uma única subtarefa, já com o plano da jornada. */
@@ -1906,7 +1913,6 @@ async function applyBatch(payload) {
   if (!spent.ok) throw new Error(`Controle de tempo — ${spent.error}`);
 
   const cfg = await getConfig();
-  const estimate = resolveEstimate(payload, cfg);
   validateStoryPoints(payload.storyPoints);
 
   // Plano ÚNICO para o lote inteiro: as subtarefas entram em sequência na
@@ -1957,7 +1963,9 @@ async function applyBatch(payload) {
       currentStartDate: t.currentStartDate || null,
       storyPoints: payload.storyPoints,
       storyFieldId: t.storyField?.id || null,
-      originalEstimate: estimate,
+      originalEstimate: resolveEstimate(payload, cfg, t.currentEstimate),
+      currentEstimate: t.currentEstimate || null,
+      currentSpent: t.currentSpent || null,
       timeSpent: payload.timeSpent,
       worklogChunks: chunksByKey[t.key] || [],
       finalize,
