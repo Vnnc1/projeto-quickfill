@@ -1,6 +1,6 @@
 {
   "repo": "https://github.com/Vnnc1/projeto-quickfill",
   "branch": "master",
-  "notes": "Novo: notificação de versão nova e botão “Atualizar agora” (ative uma vez em Opções › Atualização com um clique).",
+  "notes": "Correção: a estimativa original não muda mais sozinha ao apontar horas — o trabalhado só acumula (mostra o total). Para mudar a estimativa, digite outro valor.",
   "private": false
 }

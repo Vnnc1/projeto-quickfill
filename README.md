@@ -32,7 +32,7 @@ Extensões do Chrome para o dia a dia da equipe no Jira (Meeds All e Sustentaç�
 
 **Com um clique (recomendado):** ative uma vez em **Opções › Atualização com um clique**.
 Clique no botão, tecle **Win + R**, cole (**Ctrl+V**) e tecle **Enter**. Pronto: quando sair versão nova,
-o aviso no topo do QuickFill mostra **Atualizar agora**, e ele baixa, instala e se recarrega sozinho.
+chega uma notificação do Windows e o aviso no topo do QuickFill mostra **Atualizar agora**: ele baixa, instala e se recarrega sozinho.
 
 **Sem ativar:** no aviso **"Nova versão disponível"**, clique em **Copiar comando de atualização**, tecle
 **Win + R**, cole e tecle **Enter**. Depois clique em **Recarregar extensão**. Esse comando também ativa o
