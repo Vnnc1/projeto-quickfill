@@ -1,6 +1,6 @@
 import { parseDuration, formatJira } from "./lib/duration.js";
 import { buildPlan, parseHM, addDays, fmtHM, fmtDur, DEFAULT_WORKDAY } from "./lib/schedule.js";
-import { ROLE } from "./lib/role.js";
+import { ROLE, UPDATE_URL } from "./lib/role.js";
 import { stageFrom, termsRx, normName } from "./lib/teamstats.js";
 
 /* ------------------------------------------------------------------ */
@@ -59,6 +59,16 @@ const DEFAULTS = {
   // DESIGN: Figma
   figmaUrl: "",                        // arquivo do Figma do Meeds V2 (atalho)
   figmaToken: "",                      // token pessoal do Figma (opcional) para achar a tela da HU
+  stageValidated: "",                  // ex.: "Validado"
+  stageBlocked: "",                    // ex.: "Impedido, Aguardando"
+  qaPeople: '[{"name":"Almir Vinicius"},{"name":"Jhonathan Pinheiro"}]',   // equipe de QA (fora das regras de WIP/atribuição)
+  openMode: "panel",                   // "panel" = painel lateral do Chrome · "modal" = modal grande sobre o Jira
+  accentColor: "",                     // cor de destaque (vazio = a do perfil)
+  updateUrl: "",                       // endereço do update.json (vazio = o do pacote)
+  designPeople: '[{"name":"Amanda Saraiva"}]',   // Design UI/UX (fora das sugestões de implementação)
+  smPeople: '[{"name":"Marjorie Pinheiro"}]',   // Scrum Master / liderança (coluna própria em Pessoas)
+  ignorePeople: '[{"name":"Teste Novetech"}]',  // contas de teste/automação que não entram em Pessoas
+  designProjects: "",                  // DESIGN: projeto(s) do espaço de Design (vazio = MEED/SUS)
   qaRejectCategories: "Bug funcional, Layout/UI, Regra de negócio, Ambiente/Dados, Critério de aceite incompleto, Performance",
 };
 
@@ -270,11 +280,21 @@ async function loadIssueTree(rawKey) {
   );
 
   const isSubtask = !!issue.fields?.issuetype?.subtask;
-  const subtasks = (issue.fields?.subtasks || []).map((s) => ({
-    key: s.key,
-    summary: s.fields?.summary || "",
-    status: s.fields?.status?.name || "",
-  }));
+  const [me, withAssignee] = await Promise.all([
+    getMyself(cfg).catch(() => null),
+    isSubtask ? Promise.resolve([]) : runJql(`parent = ${key}`, ["assignee"], 100, cfg).catch(() => []),
+  ]);
+  const who = new Map(withAssignee.map((i) => [i.key, i.fields?.assignee || null]));
+  const subtasks = (issue.fields?.subtasks || []).map((s) => {
+    const a = who.get(s.key);
+    return {
+      key: s.key,
+      summary: s.fields?.summary || "",
+      status: s.fields?.status?.name || "",
+      assignee: a ? { id: a.accountId, name: a.displayName } : null,
+      mine: !!(a && me && a.accountId === me.accountId),
+    };
+  });
 
   return {
     parent: {
@@ -1062,8 +1082,8 @@ async function myDashboard(p = {}) {
 
   const [open, doneRecent] = await Promise.all([
     runJql(`assignee = currentUser() AND resolution = Unresolved${scope} ORDER BY duedate ASC, updated DESC`, fields, 200, cfg),
-    runJql(`assignee = currentUser() AND statusCategory = Done AND statusCategoryChangedDate >= -7d${scope} ORDER BY updated DESC`,
-      ["summary", "status", "issuetype", "parent", "project"], 100, cfg).catch(() => []),
+    runJql(`assignee = currentUser() AND statusCategory = Done AND statusCategoryChangedDate >= -30d${scope} ORDER BY updated DESC`,
+      ["summary", "status", "issuetype", "parent", "project", "statuscategorychangedate"], 200, cfg).catch(() => []),
   ]);
 
   const map = (i) => {
@@ -1119,8 +1139,10 @@ async function myDashboard(p = {}) {
       subtasks: issues.filter((i) => i.isSubtask).length,
       spent: issues.reduce((s, i) => s + i.spent, 0),
       estimate: issues.reduce((s, i) => s + i.estimate, 0),
-      doneWeek: doneRecent.length,
+      doneWeek: doneRecent.filter((i) => Date.parse(i.fields?.statuscategorychangedate) >= Date.now() - 7 * 864e5).length,
     },
+    done: doneRecent.map((i) => ({ key: i.key, project: i.fields?.project?.key || i.key.split("-")[0],
+      at: Date.parse(i.fields?.statuscategorychangedate) || null })),
   };
 }
 
@@ -1163,7 +1185,10 @@ async function dayReport(p = {}) {
   const total = entries.reduce((s, e) => s + e.minutes, 0);
   const history = days.slice().reverse().map((d) => {
     const t = (busy[d] || []).reduce((s, e) => s + e.minutes, 0);
-    return { date: d, total: t, goalMet: t >= goal, issues: new Set((busy[d] || []).map((e) => e.key)).size };
+    const projects = {};
+    for (const e of busy[d] || []) { const pr = e.key.split("-")[0]; projects[pr] = (projects[pr] || 0) + e.minutes; }
+    return { date: d, total: t, goalMet: t >= goal, issues: new Set((busy[d] || []).map((e) => e.key)).size, projects,
+      keys: [...new Set((busy[d] || []).map((e) => e.key))] };
   });
 
   return {
@@ -1693,10 +1718,12 @@ async function sprintIssues(sprintId, me, cfg) {
 const sprintDate = (iso) => (iso ? localSlot(iso).date : null);
 
 async function sprintInfo(p = {}) {
-  if (!p.force && _sprintCache.data && Date.now() - _sprintCache.at < SPRINT_TTL_MS) return _sprintCache.data;
+  const projs = (p.projects || []).map((x) => String(x).toUpperCase()).filter(Boolean);
+  const ckey = projs.join(",");
+  if (!p.force && _sprintCache.data && _sprintCache.key === ckey && Date.now() - _sprintCache.at < SPRINT_TTL_MS) return _sprintCache.data;
   const cfg = await getConfig();
   const me = await getMyself(cfg);
-  const spaces = [
+  const spaces = projs.length ? projs.map((pr) => ({ id: pr, label: pr, project: pr, boardId: "" })) : [
     { id: "batch", label: (cfg.defaultProject || "MEED").toUpperCase(), project: (cfg.defaultProject || "MEED").toUpperCase(), boardId: cfg.batchBoardId },
     { id: "sustentacao", label: (cfg.sustProject || "SUS").toUpperCase(), project: (cfg.sustProject || "SUS").toUpperCase(), boardId: cfg.sustBoardId },
   ];
@@ -1732,6 +1759,7 @@ async function sprintInfo(p = {}) {
 
   const data = { today: todayLocal(), spaces: result };
   _sprintCache.at = Date.now();
+  _sprintCache.key = ckey;
   _sprintCache.data = data;
   return data;
 }
@@ -1983,8 +2011,10 @@ let _statusMeta = null;
 const QA_RX = /valida|homolog|teste|\bqa\b|review|revis/i;
 const DEPLOY_RX = /deploy|produ[cç]|publica|release|libera/i;
 const PRD_RX = /\bprd\b|produ[cç][aã]o|production/i;
-const FEITO_RX = /\bfeito\b|\bpronto\b|\bdone\b|dev ok/i;
+const FEITO_RX = /\bfeito\b|\bpronto\b|\bdone\b|dev ok|\bpr\b|pull request/i;   // MEED: PR (pull request) = Feito do SUS
 const REOPEN_RX = /reab|reopen/i;
+const VALIDATED_RX = /\bvalidad|\baprovad|homologad|\bverified/i;
+const BLOCKED_RX = /impedi|bloquead|blocked|aguardando|\bparad|on hold|em espera|waiting/i;
 
 /**
  * Regras de coluna → etapa. Cada lista das Opções (ex.: "Feito, Dev OK") substitui o padrão;
@@ -1997,6 +2027,8 @@ function stageRules(cfg = {}) {
     reopen: termsRx(cfg.stageReopen, REOPEN_RX),
     qa: termsRx(cfg.stageQa, QA_RX),
     feito: termsRx(cfg.stageFeito, FEITO_RX),
+    validated: termsRx(cfg.stageValidated, VALIDATED_RX),
+    blocked: termsRx(cfg.stageBlocked, BLOCKED_RX),
   };
 }
 
@@ -2006,8 +2038,10 @@ function columnKind(name, R = stageRules()) {
   if (R.prd.test(n)) return "prd";
   if (R.deploy.test(n)) return "deploy";
   if (R.reopen.test(n)) return "reopen";
+  if (R.validated.test(n)) return "validated";   // antes de "qa": "Validado" não é fila do QA
   if (R.qa.test(n)) return "qa";
   if (R.feito.test(n)) return "feito";
+  if (R.blocked.test(n)) return "blocked";       // depois de deploy/qa: "Aguardando deploy" continua deploy
   return "other";
 }
 const _spacesCache = { at: 0, data: null };
@@ -2024,7 +2058,7 @@ async function statusMeta(cfg) {
 
 /** Espaços acompanhados (MEED e SUS) com os status de validação e de deploy de cada um. */
 async function qaSpaces(cfg, meta) {
-  const sig = [cfg.stageFeito, cfg.stageDeploy, cfg.stagePrd, cfg.stageQa, cfg.stageReopen, cfg.statusColumns, cfg.sustColumns].join("|");
+  const sig = [cfg.stageFeito, cfg.stageDeploy, cfg.stagePrd, cfg.stageQa, cfg.stageReopen, cfg.stageValidated, cfg.stageBlocked, cfg.statusColumns, cfg.sustColumns].join("|");
   if (_spacesCache.data && _spacesCache.sig === sig && Date.now() - _spacesCache.at < 10 * 60 * 1000) return _spacesCache.data;
   const data = await qaSpacesLoad(cfg, meta);
   _spacesCache.sig = sig;
@@ -2059,7 +2093,7 @@ async function qaSpacesLoad(cfg, meta) {
           const n = slug(c.name);
           const listed = wanted.some((w) => w === n);
           if (kind === "deploy" || kind === "prd") out.deployIds.push(...c.statusIds);
-          else if (kind === "qa" || (listed && kind !== "feito")) out.qaIds.push(...c.statusIds);
+          else if (kind === "qa" || (listed && !["feito", "validated", "blocked"].includes(kind))) out.qaIds.push(...c.statusIds);
         }
         if (out.qaIds.length || out.deployIds.length) out.source = "quadro";
       }
@@ -2261,6 +2295,24 @@ const BOARD_FIELDS = ["summary", "status", "issuetype", "assignee", "project", "
   "duedate", "statuscategorychangedate", "labels", "timeoriginalestimate", "timespent"];
 
 /** Issue no formato enxuto usado pelos painéis SCRUM e DESIGN. */
+/** Texto puro de um documento ADF (descrição do Jira), resumido em `max` caracteres. */
+function adfExcerpt(doc, max = 280) {
+  if (!doc) return "";
+  if (typeof doc === "string") return doc.replace(/\s+/g, " ").trim().slice(0, max);
+  const out = [];
+  const walk = (n) => {
+    if (!n || out.join(" ").length > max * 2) return;
+    if (n.type === "text" && n.text) out.push(n.text);
+    else if (n.type === "mention") out.push(n.attrs?.text || "");
+    else if (n.type === "inlineCard" || n.type === "blockCard") out.push(n.attrs?.url || "");
+    for (const c of n.content || []) walk(c);
+    if (["paragraph", "heading", "listItem", "codeBlock"].includes(n.type)) out.push(" · ");
+  };
+  walk(doc);
+  const txt = out.join(" ").replace(/\s+/g, " ").replace(/\s*·\s*(·\s*)*/g, " · ").replace(/^\s*·\s*|\s*·\s*$/g, "").trim();
+  return txt.length > max ? `${txt.slice(0, max).replace(/\s+\S*$/, "")}…` : txt;
+}
+
 function boardIssue(i, { fx, rankOf, kinds = {}, logs, meta = {} }) {
   const f = i.fields || {};
   const st = f.status || {};
@@ -2288,7 +2340,9 @@ function boardIssue(i, { fx, rankOf, kinds = {}, logs, meta = {} }) {
     estimate: f.timeoriginalestimate ? Math.round(f.timeoriginalestimate / 60) : 0,
     spent: f.timespent ? Math.round(f.timespent / 60) : 0,
     sprints: fx.sprint ? (f[fx.sprint] || []).map((s) => ({ id: s.id, name: s.name, state: s.state })) : [],
+    desc: f.description ? adfExcerpt(f.description) : "",
     transitions: statusTransitions(logs?.get(i.key) || i.changelog?.histories).map((t) => ({ ...t,
+      fromKind: kinds[t.from]?.kind || null, toKind: kinds[t.to]?.kind || null,
       fromStage: stageFrom(kinds[t.from]?.kind, meta[t.from]?.cat), toStage: stageFrom(kinds[t.to]?.kind, meta[t.to]?.cat) })),
   };
 }
@@ -2306,7 +2360,8 @@ async function completeLogs(raw, cfg, limit = 40) {
 /* ------------------------------------------------------------------ */
 
 const _scrum = { at: 0, data: null, pending: null };
-const parseDeployers = (raw) => { try { const v = JSON.parse(raw || "[]"); return Array.isArray(v) ? v.filter((x) => x?.accountId) : []; } catch { return []; } };
+/** Lista de pessoas salva nas Opções (JSON). `byName`: aceita entradas só com o nome. */
+const parseDeployers = (raw, byName = false) => { try { const v = JSON.parse(raw || "[]"); return Array.isArray(v) ? v.filter((x) => x?.accountId || (byName && x?.name)) : []; } catch { return []; } };
 const _velocity = new Map();   // sprintId -> { at, data } (sprints encerradas quase não mudam)
 
 async function closedSprintStats(sprint, fx, cfg) {
@@ -2333,13 +2388,20 @@ async function scrumSprint(p = {}) {
       sprintInfo({ force: p.force }), statusMeta(cfg), priorityList(cfg), extraFields(cfg), getMyself(cfg)]);
     const qa = await qaSpaces(cfg, meta);
     const rankOf = new Map(prios.map((x) => [x.id, x.rank]));
-    const fields = [...BOARD_FIELDS, ...[fx.points, fx.flagged].filter(Boolean)];
+    const fields = [...BOARD_FIELDS, "description", ...[fx.points, fx.flagged].filter(Boolean)];
 
     const spaces = await Promise.all(info.spaces.map(async (sp) => {
       const kinds = qa.find((s) => s.project === sp.project)?.kinds || {};
       try {
         const sprints = await Promise.all((sp.active || []).map(async (a) => {
           const raw = await searchWithChangelog(`sprint = ${Number(a.id)} ORDER BY rank ASC`, fields, 400, cfg);
+          const have = new Set(raw.map((i) => i.key));
+          const parents = raw.filter((i) => !i.fields?.issuetype?.subtask).map((i) => i.key);
+          for (let k = 0; k < parents.length; k += 50) {
+            const chunk = parents.slice(k, k + 50);
+            const subs = await searchWithChangelog(`parent in (${chunk.join(", ")})`, fields, 500, cfg).catch(() => []);
+            for (const sub of subs) if (!have.has(sub.key)) { have.add(sub.key); raw.push(sub); }
+          }
           const logs = await completeLogs(raw, cfg);
           return {
             id: a.id, name: a.name, goal: a.goal || "", start: a.start, end: a.end,
@@ -2365,6 +2427,10 @@ async function scrumSprint(p = {}) {
         feitoThreshold: Math.max(1, Number(cfg.feitoThreshold) || 3),
         deploySummary: cfg.deploySummary || "Realizando Deploy",
         deployers: parseDeployers(cfg.deployers),
+        qaPeople: parseDeployers(cfg.qaPeople, true),
+        smPeople: parseDeployers(cfg.smPeople, true),
+        designPeople: parseDeployers(cfg.designPeople, true),
+        ignorePeople: parseDeployers(cfg.ignorePeople, true),
       },
       priorities: prios, spaces,
     };
@@ -2393,7 +2459,8 @@ async function designHus(p = {}) {
     const from = addDays(today, -(days - 1));
     const [meta, prios, fx, me] = await Promise.all([statusMeta(cfg), priorityList(cfg), extraFields(cfg), getMyself(cfg)]);
     const qa = await qaSpaces(cfg, meta);
-    const projects = qa.map((s) => s.project).filter(Boolean);
+    const own = splitList(cfg.designProjects).map((x) => x.toUpperCase());
+    const projects = own.length ? own : qa.map((s) => s.project).filter(Boolean);
     const labels = splitList(cfg.designLabels || "design, ux, ui");
     const who = [`assignee = currentUser()`, `status CHANGED BY currentUser() AFTER "${from}"`];
     if (labels.length) who.push(`labels in (${labels.map(jqlString).join(", ")})`);
@@ -2417,7 +2484,7 @@ async function designHus(p = {}) {
     return {
       generatedAt: Date.now(), today, from, url: cfg.baseUrl,
       me: { accountId: me.accountId, name: me.displayName },
-      labels, weeklyGoal: Math.max(1, Number(cfg.designWeeklyGoal) || 3),
+      labels, projects, ownSpace: own.length > 0, weeklyGoal: Math.max(1, Number(cfg.designWeeklyGoal) || 3),
       designRules: { doing: cfg.designDoing, review: cfg.designReview, delivered: cfg.designDelivered },
       figmaUrl: cfg.figmaUrl || "", figmaApi: !!(cfg.figmaToken && figmaFileKey(cfg.figmaUrl)),
       priorities: prios, issues, truncated: raw.length >= 300,
@@ -2482,7 +2549,11 @@ async function saveScrumSettings(p = {}) {
   if (p.wipLimit !== undefined) data.scrumWipLimit = clamp(p.wipLimit, 1, 20, 2);
   if (p.feitoThreshold !== undefined) data.feitoThreshold = clamp(p.feitoThreshold, 1, 50, 3);
   await chrome.storage.sync.set(data);
-  _scrum.at = 0;
+  if (_scrum.data) Object.assign(_scrum.data.settings, {
+    ...(data.scrumStaleDays ? { staleDays: Number(data.scrumStaleDays) } : {}),
+    ...(data.scrumWipLimit ? { wipLimit: Number(data.scrumWipLimit) } : {}),
+    ...(data.feitoThreshold ? { feitoThreshold: Number(data.feitoThreshold) } : {}),
+  });
   return data;
 }
 
@@ -2696,6 +2767,19 @@ async function figmaFrames(p = {}) {
   return data;
 }
 
+async function statusMap() {
+  const cfg = await getConfig();
+  const meta = await statusMeta(cfg);
+  _spacesCache.data = null;   // relê com as regras atuais
+  const spaces = await qaSpaces(cfg, meta);
+  return spaces.map((sp) => ({
+    project: sp.project, board: sp.board,
+    statuses: Object.entries(sp.kinds)
+      .filter(([, k]) => k.column)
+      .map(([id, k]) => ({ id, name: meta[id]?.name || id, column: k.column, kind: k.kind, cat: meta[id]?.cat || "", stage: stageFrom(k.kind, meta[id]?.cat) })),
+  }));
+}
+
 const VERSION = chrome.runtime.getManifest?.().version || "dev";
 
 const HANDLERS = {
@@ -2722,6 +2806,8 @@ const HANDLERS = {
   HANDOFF_GET: (p) => handoffGet(p),
   HANDOFF_SAVE: (p) => handoffSave(p),
   FIGMA_FRAMES: (p) => figmaFrames(p),
+  STATUS_MAP: () => statusMap(),
+  CHECK_UPDATE: (p) => checkUpdate(p),
   SAVE_GOAL: (p) => saveGoal(p),
   TEAM_SAVE_PERSON: (p) => teamSavePerson(p),
   TEAM_USER_SEARCH: (p) => teamUserSearch(p),
@@ -2750,6 +2836,8 @@ const HANDLERS = {
       },
       baseUrl: String(cfg.baseUrl || "").replace(/\/+$/, ""),
       subtaskName: cfg.subtaskName,
+      designProjects: splitList(cfg.designProjects).map((x) => x.toUpperCase()),
+      qaPeople: parseDeployers(cfg.qaPeople, true),
       qaRejectCategories: cfg.qaRejectCategories,
       assignSelf: cfg.assignSelf,
       defaultProject: cfg.defaultProject,
@@ -2774,6 +2862,14 @@ const HANDLERS = {
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg?.type || msg.type === "BATCH_PROGRESS") return false;   // eventos, não pedidos
+  if (msg.type === "QUICKFILL_LAUNCH" || msg.type === "OPEN_SIDE_PANEL") {
+    const tabId = _sender?.tab?.id, windowId = _sender?.tab?.windowId;
+    if (msg.type === "QUICKFILL_LAUNCH" && _openMode !== "panel") { sendResponse({ ok: true, data: { panel: false } }); return false; }
+    openSidePanel({ tabId, windowId })
+      .then(() => sendResponse({ ok: true, data: { panel: true } }))
+      .catch((e) => sendResponse({ ok: false, error: e?.message || String(e) }));
+    return true;
+  }
   const handler = HANDLERS[msg.type];
   if (!handler) {
     // Nunca deixa a porta fechar em silêncio: diz o que aconteceu.
@@ -2792,14 +2888,54 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 });
 
 /* Atalho de teclado -> abre o modal na aba do Jira */
-chrome.commands.onCommand.addListener(async (command) => {
+/* ---------- Painel lateral x modal grande ---------- */
+
+// Guardado em memória: sidePanel.open() só funciona dentro do gesto do usuário (sem esperar o storage).
+let _openMode = "panel";
+chrome.storage.sync.get({ openMode: "panel" }).then((v) => { _openMode = v.openMode || "panel"; }).catch(() => {});
+chrome.storage.onChanged.addListener((ch, area) => { if (area === "sync" && ch.openMode) _openMode = ch.openMode.newValue || "panel"; });
+// Ícone da extensão na barra abre o painel lateral
+chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true }).catch(() => {});
+
+function openSidePanel({ tabId, windowId }) {
+  if (!chrome.sidePanel?.open) return Promise.reject(new Error("Painel lateral indisponível nesta versão do Chrome."));
+  return chrome.sidePanel.open(tabId ? { tabId } : { windowId });
+}
+
+chrome.commands.onCommand.addListener(async (command, tab) => {
   if (command !== "open-quickfill") return;
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.id) return;
+  if (_openMode === "panel" && (tab?.id || tab?.windowId)) {
+    try { await openSidePanel({ tabId: tab.id, windowId: tab.windowId }); return; } catch { /* cai no modal */ }
+  }
+  const [active] = tab?.id ? [tab] : await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!active?.id) return;
   try {
-    await chrome.tabs.sendMessage(tab.id, { type: "QUICKFILL_TOGGLE" });
+    await chrome.tabs.sendMessage(active.id, { type: "QUICKFILL_TOGGLE" });
   } catch {
-    // Aba não é do Jira (content script ausente) — abre o popup em janela própria.
-    chrome.windows.create({ url: chrome.runtime.getURL("modal.html?standalone=1"), type: "popup", width: ROLE === "qa" ? 520 : 620, height: ROLE === "qa" ? 760 : 800 });
+    // Aba não é do Jira (content script ausente) — abre em janela própria.
+    chrome.windows.create({ url: chrome.runtime.getURL("modal.html?standalone=1"), type: "popup", width: 1000, height: 860 });
   }
 });
+
+/* ---------- Aviso de nova versão (repositório) ---------- */
+
+const semver = (v) => String(v || "0").split(".").map((x) => parseInt(x, 10) || 0);
+const newer = (a, b) => { const x = semver(a), y = semver(b); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+
+/** Lê o update.json do repositório (no máximo a cada 6 h) e diz se há versão nova deste pacote. */
+async function checkUpdate(p = {}) {
+  const cfg = await getConfig();
+  const url = (cfg.updateUrl || UPDATE_URL || "").trim();
+  const current = chrome.runtime.getManifest().version;
+  if (!url) return { configured: false, current };
+  const { updateCheck } = await chrome.storage.local.get({ updateCheck: null });
+  if (!p.force && updateCheck?.url === url && Date.now() - updateCheck.at < 6 * 3600 * 1000) return { ...updateCheck.data, current, newer: newer(updateCheck.data.latest, current) };
+  const res = await fetch(`${url}${url.includes("?") ? "&" : "?"}t=${Date.now()}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Não consegui ler o aviso de versão (${res.status}).`);
+  const json = await res.json();
+  const pkg = json.packages?.[ROLE] || {};
+  const data = { configured: true, latest: pkg.version || json.version, notes: json.notes || "", download: pkg.download || json.download || "",
+    folder: pkg.folder || "", date: json.date || "" };
+  await chrome.storage.local.set({ updateCheck: { url, at: Date.now(), data } });
+  return { ...data, current, newer: newer(data.latest, current) };
+}

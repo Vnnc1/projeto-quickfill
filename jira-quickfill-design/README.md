@@ -6,6 +6,18 @@ depois para o desenvolvimento. Mostra **suas HUs por etapa**, **quem está esper
 
 A barra **Espaço · Todos | MEED | SUS** vale para todas as abas.
 
+## Voltar de onde parou (3.11)
+
+Fechar clicando fora, com **Esc**, abrindo uma demanda no Jira ou trocando de aba do navegador guarda a tela:
+aba, rolagem, filtros, buscas, cartões abertos e campos digitados (inclusive o checklist de handoff ainda não salvo). Ao reabrir, volta igual, com os
+dados que já estavam carregados (até 10 min; o ↻ sempre busca de novo). O **X** fecha de verdade: limpa isso e,
+na próxima vez, tudo vem do Jira.
+
+## Espaço de Design (3.5)
+
+Configure **Opções › HUs de design › Projeto(s) do espaço de Design**: Hoje, HUs, Progresso e Equipe passam a
+usar só esse espaço (não MEED/SUS). HUs impedidas/aguardando aparecem num bloco próprio.
+
 ## Hoje e Progresso
 
 Os mesmos do QuickFill DEV: horas do dia contra a meta, ritmo, sequência, histórico e "onde foi seu tempo".

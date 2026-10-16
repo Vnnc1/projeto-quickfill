@@ -55,6 +55,16 @@ function toggle() {
   document.getElementById(HOST_ID) ? close() : open();
 }
 
+/** Botão flutuante: abre no painel lateral (padrão) ou no modal grande, conforme as Opções. */
+function launch() {
+  if (document.getElementById(HOST_ID)) return close();
+  try {
+    chrome.runtime.sendMessage({ type: "QUICKFILL_LAUNCH" }, (res) => {
+      if (chrome.runtime.lastError || !res?.ok || !res.data?.panel) open();
+    });
+  } catch { open(); }
+}
+
 /* Botão flutuante discreto — some quando o modal está aberto */
 function mountLauncher() {
   if (document.getElementById("jqf-launcher-design")) return;
@@ -63,22 +73,23 @@ function mountLauncher() {
   btn.className = "jqf-launcher jqf-design";
   btn.title = "Jira QuickFill DESIGN (Ctrl+Shift+E)";
   btn.textContent = "UX";
-  btn.addEventListener("click", toggle);
+  btn.addEventListener("click", launch);
   document.documentElement.appendChild(btn);
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type === "QUICKFILL_TOGGLE") toggle();
+  if (msg?.type === "QUICKFILL_OPEN_MODAL") open();
 });
 
 /* Tamanho escolhido no modal (−/+): a moldura cresce ou encolhe junto. */
-const BASE_W = 600, BASE_H = 760;
+const BASE_W = 1000, BASE_H = 860;
 function sizeFrame(scale) {
   const frame = document.querySelector(`#${HOST_ID} iframe`);
   if (!frame) return;
   const z = Math.min(1.5, Math.max(0.8, Number(scale) || 1));
-  frame.style.width = `${Math.round(BASE_W * z)}px`;
-  frame.style.height = `${Math.round(BASE_H * z)}px`;
+  frame.style.width = `min(${Math.round(BASE_W * z)}px, 96vw)`;
+  frame.style.height = `min(${Math.round(BASE_H * z)}px, 94vh)`;
 }
 
 window.addEventListener("message", (e) => {

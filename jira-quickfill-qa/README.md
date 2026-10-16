@@ -421,6 +421,44 @@ As duas extensões podem ficar instaladas juntas. Para usar a mesma configuraç�
 **Opções › Exportar configuração** e, na outra, **Importar configuração…**. Os detalhes estão no
 README do pacote DEV.
 
+## Novidades da 4.0 — novo visual
+
+- **Painel lateral do Chrome** (padrão): o ícone da extensão, o botão no Jira e o atalho abrem o QuickFill
+  ao lado da página. O botão **◧ / ⤢** no topo alterna para o **modal grande** sobre o Jira (até 1000×860)
+  sem perder onde você estava. Dá para escolher o padrão em Opções › Aparência e abertura.
+- **Cor de destaque por perfil** (QA azul, DEV verde, SCRUM âmbar, DESIGN rosa), trocável em Opções numa
+  paleta igual para todos. As cores de dados (em andamento, abaixo da meta, burndown) continuam fixas.
+- **Setas para recolher/expandir** em todos os cards com título; fica lembrado por tela.
+- Com espaço sobrando (modal grande), os cards se organizam em **duas ou três colunas**.
+- **Aviso de nova versão** vindo do repositório da equipe — ver DISTRIBUICAO.md na raiz do projeto.
+
+## Voltar de onde parou (3.11)
+
+Fechar clicando fora, com **Esc**, abrindo uma demanda no Jira ou trocando de aba do navegador guarda a tela:
+aba, rolagem, filtros, buscas, cartões abertos e campos digitados (inclusive a evidência de teste). Ao reabrir, volta igual, com os
+dados que já estavam carregados (até 10 min; o ↻ sempre busca de novo). O **X** fecha de verdade: limpa isso e,
+na próxima vez, tudo vem do Jira.
+
+## Novidades da 3.7 — mesmos filtros dos outros QuickFill
+
+- **Espaço (Todos · MEED · SUS)** no topo de **Painel, Validação, Meu dia e Equipe** — o mesmo filtro do DEV/SCRUM,
+  lembrado entre as telas. O Painel sempre mostra MEED e SUS (antes só os espaços em que você tinha demanda).
+- **Período (Hoje · 7 · 14 · 30 dias)** em **Painel, Validação e Meu dia**:
+  - Painel: "vencem no período", "concluídas no período" e o atalho **Movimentadas** (atualizadas no período);
+    a lista continua com todas as suas demandas abertas.
+  - Validação: separa o que **chegou no período** do que **espera há mais tempo**.
+  - Meu dia: o histórico vira **últimos N dias úteis** (total, média e dias com meta); em Hoje, só o dia.
+- **Equipe** usa o Espaço e mantém a própria data (sem Período). Tarefa e Lote não mudam.
+
+## Novidades da 3.5
+
+- **Tarefa:** a subtarefa atribuída a você aparece com **Você** (as outras mostram o responsável) e, com várias
+  subtarefas, a sua "Testes Manuais" já abre selecionada.
+- **Painel:** abre na hora com o que já estava carregado e atualiza sozinho; atalhos **Em andamento · A fazer ·
+  Testes Manuais**, busca no topo (também pela tarefa pai), em andamento primeiro e sprints recolhíveis.
+- **Etapas novas nos 4 QuickFill:** **Impedido / Aguardando** (não conta mais como em andamento) e **Validado**
+  (sai da fila do QA). Opções › Etapas do quadro › **Ver como cada status foi classificado** mostra cada coluna.
+
 ## Novidades da 3.4
 
 - **Aba Validação:** a fila de tudo que está nas colunas de validação, por prioridade e tempo esperando,

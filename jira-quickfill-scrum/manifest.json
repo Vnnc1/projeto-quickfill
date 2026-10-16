@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Jira QuickFill SCRUM — Sprint e equipe",
-  "version": "3.4.0",
+  "version": "4.0.0",
   "description": "SCRUM: saúde da sprint (burndown, previsão, velocidade), quem está com o quê, riscos (impedidas, paradas, fila do QA) e a equipe ao vivo.",
   "permissions": [
     "storage",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "sidePanel"
   ],
   "host_permissions": [
     "https://*.atlassian.net/*"
@@ -16,7 +17,6 @@
     "type": "module"
   },
   "action": {
-    "default_popup": "modal.html",
     "default_title": "Jira QuickFill SCRUM",
     "default_icon": {
       "16": "icons/icon16.png",
@@ -67,5 +67,8 @@
     "32": "icons/icon32.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
+  },
+  "side_panel": {
+    "default_path": "modal.html"
   }
 }

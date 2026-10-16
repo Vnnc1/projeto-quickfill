@@ -12,9 +12,11 @@ import { addDaysIso, isWeekendIso, DAY_MS } from "./dates.js";
 export const STAGES = [
   { id: "todo", label: "A fazer", icon: "○" },
   { id: "doing", label: "Em andamento", icon: "◐" },
-  { id: "feito", label: "Feito", icon: "☑" },
+  { id: "blocked", label: "Impedido / Aguardando", icon: "⛔" },
+  { id: "feito", label: "Feito / PR", icon: "☑" },
   { id: "deploy", label: "Deploy", icon: "⇪" },
   { id: "qa", label: "Validação", icon: "🔍" },
+  { id: "validated", label: "Validado", icon: "✔" },
   { id: "done", label: "Concluído", icon: "✓" },
 ];
 const ORDER = Object.fromEntries(STAGES.map((s, i) => [s.id, i]));
@@ -22,20 +24,59 @@ const ORDER = Object.fromEntries(STAGES.map((s, i) => [s.id, i]));
 /**
  * Etapa a partir do tipo da coluna (columnKind do serviço) e da categoria do status.
  * Colunas sem nome conhecido caem pela categoria: "new" = a fazer, o resto = em andamento.
+ * Impedido/Aguardando não é "em andamento": é uma etapa própria nos quatro QuickFill.
  */
 export function stageFrom(kind, cat) {
   if (cat === "done" || kind === "done") return "done";
+  if (kind === "validated") return "validated";
   if (kind === "qa") return "qa";
   if (kind === "feito") return "feito";
   if (kind === "deploy" || kind === "prd") return "deploy";
+  if (kind === "blocked") return "blocked";
   if (kind === "reopen") return "doing";
   if (cat === "new") return "todo";
   return "doing";
 }
-export const stageOf = (i) => stageFrom(i.kind, i.status?.cat);
+/** Etapa da própria coluna da demanda. */
+export const ownStage = (i) => stageFrom(i.kind, i.status?.cat);
+/**
+ * Etapa considerada: subtarefa cuja tarefa pai já foi concluída ou validada segue o pai
+ * (ex.: pai concluído e subtarefas esquecidas em PR não contam como "em andamento").
+ */
+export const stageOf = (i) => (i.isSubtask && (i.parentStage === "done" || i.parentStage === "validated") ? i.parentStage : ownStage(i));
+/** Anota em cada subtarefa a etapa da tarefa pai (quando o pai está na lista). */
+export function linkParents(issues) {
+  const parents = new Map(issues.filter((i) => !i.isSubtask).map((i) => [i.key, i]));
+  for (const i of issues) if (i.isSubtask && parents.has(i.parentKey)) i.parentStage = ownStage(parents.get(i.parentKey));
+  return issues;
+}
+/** Subtarefa ainda aberta no Jira, mas com o pai concluído/validado. */
+export const orphanOpen = (i) => i.isSubtask && stageOf(i) !== ownStage(i) && ownStage(i) !== "done";
 
-/** Voltou no fluxo: saiu de Feito/Validação/Concluído para A fazer/Em andamento. */
-export const isReturn = (t) => t.fromStage && t.toStage && ORDER[t.fromStage] >= ORDER.feito && ORDER[t.toStage] <= ORDER.doing;
+/** Voltou no fluxo: saiu de Feito/Validação/Validado/Concluído para A fazer/Em andamento. */
+export const isReturn = (t) => t.fromStage && t.toStage && ORDER[t.fromStage] >= ORDER.feito && ["todo", "doing"].includes(t.toStage);
+
+/**
+ * Reaberturas: cada vez que a demanda ENTRA em "Reaberto" conta uma volta
+ * (Validação → Reaberto → Em andamento → Validação → Reaberto = 2 voltas).
+ * Sem a coluna Reaberto no histórico (dados antigos), cai na regra geral de retorno.
+ */
+export function reopenEvents(i, fromMs = 0) {
+  const tr = i.transitions || [];
+  const known = tr.some((t) => t.toKind !== undefined);
+  const list = known ? tr.filter((t) => t.toKind === "reopen" && t.fromKind !== "reopen") : tr.filter(isReturn);
+  return list.filter((t) => t.at >= fromMs);
+}
+
+/** Pessoa da equipe de QA (Opções): pelo accountId ou pelo começo do nome. */
+export function qaMatcher(qaPeople = []) {
+  const ids = new Set(qaPeople.map((p) => p.accountId).filter(Boolean));
+  const names = qaPeople.map((p) => normName(p.name)).filter(Boolean);
+  return (id, name) => ids.has(id) || (!!name && names.some((n) => normName(name).startsWith(n)));
+}
+
+/** Quando a demanda entrou na etapa atual (última transição para ela). */
+export const enteredStageAt = (i, stage) => [...(i.transitions || [])].reverse().find((t) => t.toStage === stage)?.at || null;
 
 /* ---------- nomes configuráveis (Opções) ---------- */
 
@@ -154,40 +195,64 @@ export function sprintHealth(sprint, today) {
  * Carga por pessoa na sprint. `wipLimit` marca quem está com itens demais em andamento;
  * para o que está sem responsável sugere quem já atua na mesma tarefa pai e tem menos WIP.
  */
-export function peopleLoad(issues, { wipLimit = 2, staleDays = 3, now = Date.now() } = {}) {
+export function peopleLoad(issues, { wipLimit = 2, staleDays = 3, qaPeople = [], smPeople = [], designPeople = [], ignorePeople = [], fromMs = 0, now = Date.now() } = {}) {
+  const isQa = qaMatcher(qaPeople);
+  const isSm = qaMatcher(smPeople);
+  const isDesign = qaMatcher(designPeople);
+  const ignored = qaMatcher(ignorePeople);
   const people = new Map();
   const unassigned = [];
   const person = (a) => {
-    if (!people.has(a.id)) people.set(a.id, { id: a.id, name: a.name, stages: Object.fromEntries(STAGES.map((s) => [s.id, []])),
-      points: 0, donePts: 0, returns: 0, stalled: 0, parents: new Set() });
+    if (!people.has(a.id)) people.set(a.id, { id: a.id, name: a.name, isSm: isSm(a.id, a.name), isDesign: !isSm(a.id, a.name) && isDesign(a.id, a.name),
+      isQa: !isSm(a.id, a.name) && !isDesign(a.id, a.name) && isQa(a.id, a.name),
+      stages: Object.fromEntries(STAGES.map((s) => [s.id, []])),
+      points: 0, donePts: 0, returns: 0, stalled: 0, parents: new Set(), moves: 0, doneInPeriod: 0, active: new Set() });
     return people.get(a.id);
   };
   for (const i of issues) {
     const st = stageOf(i);
+    // Movimentos no período feitos por qualquer pessoa da sprint (quem moveu o card)
+    for (const t of i.transitions || []) {
+      if (t.at < fromMs || !t.by || ignored(t.by, t.byName)) continue;
+      const mover = person({ id: t.by, name: t.byName });
+      mover.moves++;
+      mover.active.add(i.key);
+    }
+    if (i.assignee && ignored(i.assignee.id, i.assignee.name)) continue;   // conta de teste/automação
     if (!i.assignee) { if (st !== "done") unassigned.push(i); continue; }
     const p = person(i.assignee);
     p.stages[st].push(i);
     p.points += i.points || 0;
-    if (st === "done") p.donePts += i.points || 0;
-    p.returns += (i.transitions || []).filter(isReturn).length;
+    if (st === "done") {
+      p.donePts += i.points || 0;
+      if ((i.catChanged || 0) >= fromMs) p.doneInPeriod++;
+    }
+    p.returns += reopenEvents(i, fromMs).length;
     if (st === "doing" && businessAge(lastMove(i), now) >= staleDays) p.stalled++;
+    if ((lastMove(i) || 0) >= fromMs) p.active.add(i.key);
     p.parents.add(i.parentKey || i.key);
   }
-  const list = [...people.values()].map((p) => {
-    const wip = p.stages.doing.length;
-    const open = STAGES.filter((s) => s.id !== "done").reduce((n, s) => n + p.stages[s.id].length, 0);
-    const oldest = p.stages.doing.reduce((m, i) => Math.max(m, businessAge(lastMove(i), now)), 0);
-    return { ...p, wip, open, oldest, overWip: wip > wipLimit, free: open === 0 };
-  }).sort((a, b) => b.open - a.open || a.name.localeCompare(b.name));
+  const list = [...people.values()]
+    // Sem itens: só aparece quem moveu cards no período filtrado (e a Scrum Master, sempre)
+    .filter((p) => STAGES.some((s) => p.stages[s.id].length) || p.isSm || (fromMs > 0 && p.moves))
+    .map((p) => {
+      const wip = p.stages.doing.length;
+      const open = STAGES.filter((s) => s.id !== "done").reduce((n, s) => n + p.stages[s.id].length, 0);
+      const oldest = p.stages.doing.reduce((m, i) => Math.max(m, businessAge(lastMove(i), now)), 0);
+      // Regras de WIP e de "livre" valem para quem desenvolve; a equipe de QA fica de fora.
+      const dev = !p.isQa && !p.isSm && !p.isDesign;
+      return { ...p, wip, open, oldest, overWip: dev && wip > wipLimit, free: dev && open === 0 };
+    }).sort((a, b) => a.isQa - b.isQa || b.open - a.open || a.name.localeCompare(b.name));
 
+  const devs = list.filter((p) => !p.isQa && !p.isSm && !p.isDesign);
   const suggest = (i) => {
     const fam = i.parentKey || i.key;
-    const near = list.filter((p) => p.parents.has(fam) && !p.overWip).sort((a, b) => a.wip - b.wip || a.open - b.open);
+    const near = devs.filter((p) => p.parents.has(fam) && !p.overWip).sort((a, b) => a.wip - b.wip || a.open - b.open);
     if (near.length) return { person: near[0], why: `já atua em ${fam}` };
-    const light = list.filter((p) => !p.overWip).sort((a, b) => a.wip - b.wip || a.open - b.open);
+    const light = devs.filter((p) => !p.overWip).sort((a, b) => a.wip - b.wip || a.open - b.open);
     return light.length ? { person: light[0], why: light[0].wip ? `menor WIP (${light[0].wip})` : "sem nada em andamento" } : null;
   };
-  return { people: list, unassigned: unassigned.map((i) => ({ issue: i, suggestion: suggest(i) })) };
+  return { people: list, devs, qa: list.filter((p) => p.isQa), sm: list.filter((p) => p.isSm), design: list.filter((p) => p.isDesign), unassigned: unassigned.map((i) => ({ issue: i, suggestion: suggest(i) })) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -195,40 +260,105 @@ export function peopleLoad(issues, { wipLimit = 2, staleDays = 3, now = Date.now
 /* ------------------------------------------------------------------ */
 
 export const RISKS = [
-  { id: "flagged", label: "Impedidas", icon: "🚩", tip: "Sinalizadas como impedimento no Jira" },
-  { id: "returned", label: "Voltaram", icon: "🔁", tip: "Saíram de Feito/Validação/Concluído e voltaram para desenvolvimento durante a sprint" },
-  { id: "stalled", label: "Paradas", icon: "⏳", tip: "Em andamento sem mudar de status há vários dias úteis" },
+  { id: "flagged", label: "Impedidas", icon: "🚩", tip: "Na coluna Impedido/Aguardando ou sinalizadas como impedimento no Jira", state: true },
+  { id: "returned", label: "Reabertas", icon: "🔁", tip: "Cada entrada em Reaberto conta uma volta (Validação → Reaberto → … → Reaberto = 2×)" },
+  { id: "stalled", label: "Paradas", icon: "⏳", tip: "Em andamento sem mudar de status há vários dias úteis", state: true },
   { id: "feitoQueue", label: "Aguardando deploy", icon: "☑", tip: "Em Feito esperando quem faz o deploy mover para Deploy" },
-  { id: "qaQueue", label: "Fila do QA", icon: "🔍", tip: "Aguardando validação — o gargalo mais comum no fim da sprint" },
-  { id: "overdue", label: "Atrasadas", icon: "📅", tip: "Data limite já passou e ainda não concluíram" },
-  { id: "highTodo", label: "Prioridade alta parada", icon: "⚠", tip: "Prioridade alta ou crítica ainda em A fazer" },
-  { id: "unassigned", label: "Sem responsável", icon: "👤", tip: "Itens abertos da sprint sem ninguém atribuído" },
-  { id: "overEstimate", label: "Passaram da estimativa", icon: "⌛", tip: "Tempo apontado maior que a estimativa original" },
+  { id: "qaQueue", label: "Fila do QA", icon: "🔍", tip: "Na coluna Validação esperando o QA (Validado já saiu da fila)" },
+  { id: "overdue", label: "Atrasadas", icon: "📅", tip: "Data limite já passou e ainda não concluíram", state: true },
+  { id: "highTodo", label: "Prioridade alta parada", icon: "⚠", tip: "Prioridade alta ou crítica ainda em A fazer", state: true },
+  { id: "unassigned", label: "Sem responsável", icon: "👤", tip: "Itens abertos da sprint sem ninguém atribuído", state: true },
+  { id: "overEstimate", label: "Passaram da estimativa", icon: "⌛", tip: "Tempo apontado maior que a estimativa original", state: true },
   { id: "added", label: "Entraram depois do início", icon: "➕", tip: "Criadas depois do primeiro dia da sprint (mudança de escopo)" },
+  { id: "orphanSubs", label: "Subtarefas esquecidas", icon: "🧹", tip: "Subtarefas ainda abertas (ex.: em PR) com a tarefa pai já concluída ou validada — não contam como em andamento; vale fechar no Jira", state: true },
 ];
 
-export function sprintRisks(sprint, { staleDays = 3, today, now = Date.now(), isHigh = () => false } = {}) {
+/**
+ * Riscos da sprint. `fromMs` (filtro de período) vale para os eventos — reabertas, entradas em
+ * Feito/Validação e itens criados; os riscos de estado (impedidas, paradas, atrasadas…) são sempre "agora".
+ */
+export function sprintRisks(sprint, { staleDays = 3, today, now = Date.now(), isHigh = () => false, fromMs = 0, qaPeople = [] } = {}) {
+  const isQa = qaMatcher(qaPeople);
   const startMs = Date.parse(`${sprint.start}T00:00:00`);
+  const evFrom = Math.max(fromMs, 0);
   const out = Object.fromEntries(RISKS.map((r) => [r.id, []]));
   for (const i of sprint.issues) {
     const st = stageOf(i);
     const open = st !== "done";
     const age = businessAge(lastMove(i), now);
-    if (open && i.flagged) out.flagged.push({ issue: i, age });
-    const rets = (i.transitions || []).filter((t) => t.at >= startMs && isReturn(t));
-    if (rets.length) out.returned.push({ issue: i, count: rets.length, last: rets[rets.length - 1] });
+    if (open && (i.flagged || st === "blocked")) out.flagged.push({ issue: i, age, why: st === "blocked" ? i.status.name : "sinalizada" });
+    const reopens = reopenEvents(i, Math.max(startMs, evFrom));
+    if (reopens.length) {
+      const last = reopens[reopens.length - 1];
+      out.returned.push({ issue: i, count: reopens.length, last, byQa: reopens.some((t) => isQa(t.by, t.byName)) });
+    }
     if (st === "doing" && age >= staleDays) out.stalled.push({ issue: i, age });
-    if (st === "qa") out.qaQueue.push({ issue: i, age });
-    if (st === "feito") out.feitoQueue.push({ issue: i, age });
+    if (st === "qa" && (enteredStageAt(i, "qa") || lastMove(i) || 0) >= evFrom) out.qaQueue.push({ issue: i, age });
+    if (st === "feito" && (enteredStageAt(i, "feito") || lastMove(i) || 0) >= evFrom) out.feitoQueue.push({ issue: i, age });
     if (open && i.due && i.due < today) out.overdue.push({ issue: i, age, late: businessDays(i.due, today).length - 1 });
     if (st === "todo" && isHigh(i.priority)) out.highTodo.push({ issue: i, age });
     if (open && !i.assignee && !i.isSubtask) out.unassigned.push({ issue: i, age });
     if (i.estimate && i.spent > i.estimate) out.overEstimate.push({ issue: i, age, over: i.spent - i.estimate });
-    if (!i.isSubtask && i.created && i.created > startMs + DAY_MS) out.added.push({ issue: i, age });
+    if (!i.isSubtask && i.created && i.created > startMs + DAY_MS && i.created >= evFrom) out.added.push({ issue: i, age });
+    if (orphanOpen(i)) out.orphanSubs.push({ issue: i, age, own: i.status.name });
   }
   for (const k of ["stalled", "qaQueue", "feitoQueue", "flagged"]) out[k].sort((a, b) => b.age - a.age);
+  out.returned.sort((a, b) => b.count - a.count || b.last.at - a.last.at);
   return out;
 }
+
+/* ------------------------------------------------------------------ */
+/* Métricas de fluxo da sprint                                          */
+/* ------------------------------------------------------------------ */
+
+/** Tempo (ms) que a demanda passou em cada etapa, pelas transições. */
+export function timeInStages(i, now = Date.now()) {
+  const out = {};
+  const tr = i.transitions || [];
+  for (let k = 0; k < tr.length; k++) {
+    const st = tr[k].toStage;
+    if (!st) continue;
+    const end = k + 1 < tr.length ? tr[k + 1].at : now;
+    out[st] = (out[st] || 0) + Math.max(0, end - tr[k].at);
+  }
+  return out;
+}
+
+const avg = (xs) => (xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null);
+
+/**
+ * Cycle time (1ª vez em andamento → concluído), tempo médio na fila do QA, tempo impedido,
+ * taxa de reabertura, vazão e aprovação de primeira — sobre HUs, tarefas e bugs da sprint.
+ */
+export function flowMetrics(sprint, { today, fromMs = 0, now = Date.now() } = {}) {
+  const items = sprint.issues.filter((i) => !i.isSubtask);
+  const done = items.filter((i) => stageOf(i) === "done");
+  const cycles = done.map((i) => {
+    const start = (i.transitions || []).find((t) => t.toStage === "doing")?.at;
+    return start && i.catChanged && i.catChanged > start ? i.catChanged - start : null;
+  }).filter(Boolean);
+  const stageTimes = items.map((i) => timeInStages(i, now));
+  const qaTimes = stageTimes.map((t) => t.qa).filter(Boolean);
+  const blockedTimes = stageTimes.map((t) => t.blocked).filter(Boolean);
+  const reopened = items.filter((i) => reopenEvents(i).length);
+  const passedQa = items.filter((i) => (i.transitions || []).some((t) => t.fromStage === "qa"));
+  const firstPass = passedQa.filter((i) => !reopenEvents(i).length);
+  const days = businessDays(fromMs ? isoOf(fromMs) : sprint.start, today).length || 1;
+  const doneInPeriod = done.filter((i) => (i.catChanged || 0) >= fromMs);
+  return {
+    cycleAvg: avg(cycles),
+    qaWaitAvg: avg(qaTimes),
+    blockedAvg: avg(blockedTimes),
+    blockedNow: items.filter((i) => stageOf(i) === "blocked").length,
+    reopenRate: items.length ? reopened.length / items.length : 0,
+    reopened: reopened.length,
+    firstPassRate: passedQa.length ? firstPass.length / passedQa.length : null,
+    throughput: doneInPeriod.length / days,
+    doneInPeriod: doneInPeriod.length,
+    wipNow: items.filter((i) => stageOf(i) === "doing").length,
+  };
+}
+
 
 /* ------------------------------------------------------------------ */
 /* DESIGN: etapas da HU                                                 */
@@ -258,6 +388,7 @@ const D_REVIEW = /revis|review|aprova|feedback|validacao (de )?(design|ux|ui|lay
 const D_DOING = /design|prototip|wirefram|\bux\b|\bui\b|layout|figma|discovery|descoberta|pesquisa|research|ideac|benchmark/i;
 const D_DELIVERED = /pronto (para|p\/) ?dev|ready for dev|sprint backlog|refinad|entregue/i;
 const D_DEV = /dev|desenvolv|codig|code|deploy|feito|valida|homolog|teste|\bqa\b|pronto|ready/i;
+const D_BLOCKED = /impedi|bloquead|blocked|aguardando|parad|on hold|em espera/;
 const D_DONE = /conclu|\bdone\b|fechad|resolvid|closed/i;
 
 /** Regras de nome de status do Design: as listas das Opções substituem o padrão. */
@@ -320,7 +451,8 @@ export function designBoard(data, { project = "", weeks = 6 } = {}) {
     const inSprint = (i.sprints || []).some((s) => s.state === "active");
     // Protótipo já trabalhado e HU colocada numa sprint (ativa ou futura) = entregue ao dev.
     if (stage === "queue" && cycle.started && (i.sprints || []).some((s) => s.state === "active" || s.state === "future")) stage = "handoff";
-    return { issue: i, stage, cycle, inSprint, age: businessAge(lastMove(i)) };
+    const blocked = i.kind === "blocked" || D_BLOCKED.test(normName(i.status.name)) || !!i.flagged;
+    return { issue: i, stage, cycle, inSprint, blocked, age: businessAge(lastMove(i)) };
   });
   for (const r of rows) groups[r.stage].push(r);
   for (const g of Object.values(groups)) g.sort((a, b) => (a.issue.priority?.rank ?? 99) - (b.issue.priority?.rank ?? 99) || b.age - a.age);
@@ -339,5 +471,6 @@ export function designBoard(data, { project = "", weeks = 6 } = {}) {
   const noFigma = rows.filter((r) => ["doing", "review", "handoff"].includes(r.stage) && !r.issue.hasFigma);
   const rounds = rows.reduce((s, r) => s + r.cycle.rounds, 0);
 
-  return { rows, groups, series, thisWeek: series[series.length - 1].count, avgLead, waiting, noFigma, rounds };
+  const blockedRows = rows.filter((r) => r.blocked && r.stage !== "delivered");
+  return { rows, groups, series, blocked: blockedRows, thisWeek: series[series.length - 1].count, avgLead, waiting, noFigma, rounds };
 }

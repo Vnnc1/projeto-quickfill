@@ -12,7 +12,7 @@
     <!-- ============ Cabeçalho ============ -->
     <header class="top">
       <div class="brand">
-        <span class="logo" aria-hidden="true">⏱</span>
+        <img class="logo" src="icons/icon48.png" alt="" aria-hidden="true" />
         <div>
           <h1>QuickFill</h1>
           <p id="ctxLine">Subtarefas do Jira</p>
@@ -35,6 +35,7 @@
 
       <div class="top-actions">
         <button class="ic" id="btnDiscard" title="Descartar rascunho">⟲</button>
+        <button class="ic" id="btnLayout" title="Painel lateral / modal grande">◧</button>
         <button class="ic" id="btnOptions" title="Opções">⚙</button>
         <button class="ic" id="btnClose" title="Fechar (Esc)">✕</button>
       </div>
@@ -43,6 +44,12 @@
     <div id="staleBox" class="alert danger hidden">
       <span></span>
       <button class="btn sm primary" id="btnReloadExt">Recarregar extensão</button>
+    </div>
+    <div id="updateBox" class="alert update hidden">
+      <span></span>
+      <button class="btn sm" id="btnUpdateHow">Como atualizar</button>
+      <button class="btn sm primary" id="btnUpdateGet">Baixar</button>
+      <button class="ic sm" id="updateClose" title="Ocultar até a próxima versão">✕</button>
     </div>
     <div id="restored" class="alert info hidden">
       <span></span>
@@ -66,13 +73,35 @@
       <button class="tab full-only" data-mode="day">Meu dia</button>
     </nav>
 
-    <!-- Espaço (DEV/SCRUM/DESIGN): vale para todas as abas -->
-    <div class="spacebar dash-only" id="spaceBar">
+    <!-- Espaço: vale para todas as abas (no QA: Painel, Validação, Meu dia e Equipe) -->
+    <div class="spacebar" id="spaceBar">
       <span class="spacebar-l">Espaço</span>
       <div class="seg" id="globalSpace">
         <button data-project="" class="on">Todos</button>
       </div>
       <span class="spacebar-info" id="spaceInfo"></span>
+    </div>
+
+    <!-- Período (QA): Painel, Validação e Meu dia -->
+    <div class="spacebar hidden" id="qaPeriodBar" data-roles="qa">
+      <span class="spacebar-l">Período</span>
+      <div class="seg" id="qaPeriod">
+        <button data-p="today">Hoje</button>
+        <button data-p="7" class="on">7 dias</button>
+        <button data-p="14">14 dias</button>
+        <button data-p="30">30 dias</button>
+      </div>
+    </div>
+
+    <!-- Período (SCRUM): vale para Sprint, Pessoas e Riscos -->
+    <div class="spacebar" id="scPeriodBar" data-roles="scrum">
+      <span class="spacebar-l">Período</span>
+      <div class="seg" id="scPeriod">
+        <button data-p="sprint" class="on" title="Desde o início da sprint">Sprint</button>
+        <button data-p="today">Hoje</button>
+        <button data-p="7">7 dias</button>
+        <button data-p="14">14 dias</button>
+      </div>
     </div>
 
     <main class="scroll" id="scroll">
@@ -104,7 +133,6 @@
         </div>
         <div class="pg-sprintbar hidden" id="pgSprintBar">
           <select id="pgSprint" class="inp sm" title="Sprint"></select>
-          <label class="pg-only"><input type="checkbox" id="pgOnlySprint" checked /> só demandas da sprint</label>
         </div>
         <p class="muted xs" id="pgSprintErr"></p>
         <div id="progressBox"><p class="muted xs">Carregando…</p></div>
@@ -139,6 +167,7 @@
         </div>
         <div id="scSetBox" class="custom hidden"></div>
         <div id="scDeploy" class="hidden"></div>
+        <input id="scSearch" class="inp sm search-in" placeholder="Buscar na sprint: chave, título, pessoa, tarefa pai ou subtarefa…" autocomplete="off" />
         <div id="scSprintBox" class="m-box"><p class="muted xs">Carregando a sprint…</p></div>
       </section>
 
@@ -423,10 +452,14 @@
             <button data-type="parent">Pai</button>
             <button data-type="sub">Sub</button>
           </div>
+          <span class="muted xs grow" id="panelInfo"></span>
           <button class="ic bordered" id="panelRefresh" title="Atualizar">↻</button>
         </div>
-        <div id="sprintBox" class="sprints"></div>
-        <input id="panelSearch" class="inp" placeholder="Filtrar por chave ou título…" autocomplete="off" />
+        <input id="panelSearch" class="inp" placeholder="Buscar nas suas demandas por chave, título ou tarefa pai…" autocomplete="off" />
+        <details class="sprint-wrap" id="sprintWrap">
+          <summary>Sprints MEED e SUS</summary>
+          <div id="sprintBox" class="sprints"></div>
+        </details>
         <div id="panelBox"><p class="muted xs">Carregando…</p></div>
       </section>
 

@@ -1,7 +1,9 @@
 import { ROLE } from "./lib/role.js";
+import { PALETTE, ROLE_ACCENT, applyAccent, loadAccent } from "./lib/theme.js";
 
 const ROLE_NAME = { qa: "QuickFill QA", dev: "QuickFill DEV", scrum: "QuickFill SCRUM", design: "QuickFill DESIGN" }[ROLE] || "QuickFill";
 document.documentElement.classList.add(`role-${ROLE}`);
+loadAccent(ROLE);
 if (ROLE !== "qa") document.documentElement.classList.add("role-dash");
 document.querySelectorAll("[data-roles]").forEach((e) => e.classList.toggle("role-off", !e.dataset.roles.split(/\s+/).includes(ROLE)));
 document.title = `Jira ${ROLE_NAME} — Opções`;
@@ -13,6 +15,55 @@ const ROLE_SUB = {
 }[ROLE];
 if (ROLE_SUB) document.querySelector(".hdr p").textContent = ROLE_SUB;
 
+/* Lista de pessoas com busca no Jira (aceita entradas só com o nome, casadas pelo começo do nome). */
+function peoplePicker(prefix, hiddenId) {
+  const list = () => { try { return JSON.parse($(hiddenId).value || "[]"); } catch { return []; } };
+  const render = () => {
+    const box = $(`${prefix}Chips`);
+    box.innerHTML = "";
+    for (const d of list()) {
+      const c = document.createElement("span");
+      c.className = "pick-chip";
+      c.textContent = d.accountId ? d.name : `${d.name} (pelo nome)`;
+      const x = document.createElement("button");
+      x.textContent = "✕"; x.title = "Remover";
+      x.addEventListener("click", () => { $(hiddenId).value = JSON.stringify(list().filter((y) => (y.accountId || y.name) !== (d.accountId || d.name))); render(); msg("Lembre de salvar."); });
+      c.appendChild(x);
+      box.appendChild(c);
+    }
+    if (!box.children.length) box.innerHTML = '<span class="help" style="margin:0">Ninguém.</span>';
+  };
+  let timer = null;
+  // depois da carga do módulo (o $ é declarado mais abaixo)
+  queueMicrotask(() => $(`${prefix}Search`).addEventListener("input", () => {
+    clearTimeout(timer);
+    const q = $(`${prefix}Search`).value.trim();
+    const box = $(`${prefix}Results`);
+    if (q.length < 2) { box.innerHTML = ""; return; }
+    timer = setTimeout(() => chrome.runtime.sendMessage({ type: "TEAM_USER_SEARCH", payload: { query: q } }, (res) => {
+      box.innerHTML = "";
+      if (chrome.runtime.lastError || !res?.ok) { box.textContent = res?.error || "Não foi possível buscar (salve a conexão primeiro)."; return; }
+      for (const u of res.data) {
+        const b = document.createElement("button");
+        b.className = "btn"; b.textContent = `+ ${u.name}`;
+        b.addEventListener("click", () => {
+          const next = list().filter((y) => y.accountId !== u.accountId && !(!y.accountId && u.name.toLowerCase().startsWith(String(y.name).toLowerCase())));
+          next.push(u);
+          $(hiddenId).value = JSON.stringify(next);
+          $(`${prefix}Search`).value = ""; box.innerHTML = "";
+          render(); msg("Lembre de salvar.");
+        });
+        box.appendChild(b);
+      }
+      if (!res.data.length) box.textContent = "Ninguém encontrado.";
+    }), 350);
+  }));
+  return { render };
+}
+const smPicker = peoplePicker("sm", "smPeople");
+const ignorePicker = peoplePicker("ignore", "ignorePeople");
+const designPicker = peoplePicker("designP", "designPeople");
+
 const FIELDS = ["baseUrl", "email", "apiToken", "startDateFieldId", "logWorkComment", "subtaskName", "subtaskTypeId",
   "defaultProject", "projectAliases", "statusColumns", "sustProject", "sustColumns",
   "workStart", "workEnd", "dailyCapHours", "dailyGoalHours",
@@ -20,13 +71,17 @@ const FIELDS = ["baseUrl", "email", "apiToken", "startDateFieldId", "logWorkComm
   "teamProjects", "teamGoalHours", "teamCapHours", "overflowMode",
   "scrumStaleDays", "scrumWipLimit", "designLabels", "designWeeklyGoal",
   "stageFeito", "stageDeploy", "stagePrd", "stageQa", "stageReopen", "designDoing", "designReview", "designDelivered",
-  "feitoThreshold", "deployIssueType", "deploySummary", "deployers", "figmaUrl", "figmaToken", "qaRejectCategories"];
+  "feitoThreshold", "deployIssueType", "deploySummary", "deployers", "figmaUrl", "figmaToken", "qaRejectCategories",
+  "stageValidated", "stageBlocked", "qaPeople", "designProjects", "smPeople", "ignorePeople", "designPeople", "accentColor", "openMode", "updateUrl"];
 // Todas nascem ligadas: só ficam desligadas se tiverem sido salvas como false.
 const FLAGS = ["assignSelf", "skipWeekends", "estimateFromSpent", "zeroRemainingOnDone"];
 const DEFAULT_VALUES = { workStart: "11:00", workEnd: "17:00", dailyCapHours: "6", dailyGoalHours: "4", defaultStoryPoints: "1",
   teamGoalHours: "4", teamCapHours: "6", overflowMode: "sameDay",
   scrumStaleDays: "3", scrumWipLimit: "2", designLabels: "design, ux, ui", designWeeklyGoal: "3",
   feitoThreshold: "3", deployIssueType: "Tarefa", deploySummary: "Realizando Deploy", deployers: "[]",
+  qaPeople: '[{"name":"Almir Vinicius"},{"name":"Jhonathan Pinheiro"}]',
+  openMode: "panel", accentColor: "", updateUrl: "",
+  smPeople: '[{"name":"Marjorie Pinheiro"}]', designPeople: '[{"name":"Amanda Saraiva"}]', ignorePeople: '[{"name":"Teste Novetech"}]',
   qaRejectCategories: "Bug funcional, Layout/UI, Regra de negócio, Ambiente/Dados, Critério de aceite incompleto, Performance" };
 
 const toMin = (t) => {
@@ -47,6 +102,11 @@ chrome.storage.sync.get([...FIELDS, ...FLAGS], (cfg) => {
   // assignSelf nasce ligado: só fica desligado se tiver sido salvo como false
   FLAGS.forEach((f) => ($(f).checked = cfg[f] !== false));
   renderDeployers();
+  renderQaPeople();
+  smPicker.render();
+  ignorePicker.render();
+  renderSwatches();
+  designPicker.render();
 });
 
 /* ---------- Quem faz deploy (busca no Jira) ---------- */
@@ -132,6 +192,11 @@ $("save").addEventListener("click", () => {
   data.deployIssueType = data.deployIssueType || "Tarefa";
   data.deploySummary = data.deploySummary || "Realizando Deploy";
   data.deployers = data.deployers || "[]";
+  data.qaPeople = data.qaPeople || "[]";
+  data.smPeople = data.smPeople || "[]";
+  data.ignorePeople = data.ignorePeople || "[]";
+  data.designPeople = data.designPeople || "[]";
+  data.designProjects = data.designProjects.toUpperCase();
   if (data.figmaUrl && !/figma\.com\/(file|design|proto|board)\//.test(data.figmaUrl)) return msg("O link do Figma precisa ser de um arquivo (figma.com/design/…).", true);
   data.teamProjects = data.teamProjects.toUpperCase();
   data.defaultProject = data.defaultProject.toUpperCase();
@@ -188,3 +253,115 @@ $("importFile").addEventListener("change", async () => {
     msg(e.message || "Não foi possível importar.", true);
   }
 });
+
+/* ---------- Equipe de QA (mesma busca do deploy; aceita entradas só com o nome) ---------- */
+
+const qaList = () => { try { return JSON.parse($("qaPeople").value || "[]"); } catch { return []; } };
+function renderQaPeople() {
+  const box = $("qaChips");
+  box.innerHTML = "";
+  for (const d of qaList()) {
+    const c = document.createElement("span");
+    c.className = "pick-chip";
+    c.textContent = d.accountId ? d.name : `${d.name} (pelo nome)`;
+    const x = document.createElement("button");
+    x.textContent = "✕"; x.title = "Remover";
+    x.addEventListener("click", () => { $("qaPeople").value = JSON.stringify(qaList().filter((y) => y !== d && (y.accountId || y.name) !== (d.accountId || d.name))); renderQaPeople(); msg("Lembre de salvar."); });
+    c.appendChild(x);
+    box.appendChild(c);
+  }
+  if (!box.children.length) box.innerHTML = '<span class="help" style="margin:0">Ninguém ainda.</span>';
+}
+let qaTimer = null;
+$("qaSearch").addEventListener("input", () => {
+  clearTimeout(qaTimer);
+  const q = $("qaSearch").value.trim();
+  if (q.length < 2) { $("qaResults").innerHTML = ""; return; }
+  qaTimer = setTimeout(() => {
+    chrome.runtime.sendMessage({ type: "TEAM_USER_SEARCH", payload: { query: q } }, (res) => {
+      const box = $("qaResults");
+      box.innerHTML = "";
+      if (chrome.runtime.lastError || !res?.ok) { box.textContent = res?.error || "Não foi possível buscar (salve a conexão primeiro)."; return; }
+      for (const u of res.data) {
+        const b = document.createElement("button");
+        b.className = "btn"; b.textContent = `+ ${u.name}`;
+        b.addEventListener("click", () => {
+          // troca a entrada "só nome" pela pessoa do Jira
+          const list = qaList().filter((y) => y.accountId !== u.accountId && !(!y.accountId && u.name.toLowerCase().startsWith(String(y.name).toLowerCase())));
+          list.push(u);
+          $("qaPeople").value = JSON.stringify(list);
+          $("qaSearch").value = ""; box.innerHTML = "";
+          renderQaPeople();
+          msg("Lembre de salvar.");
+        });
+        box.appendChild(b);
+      }
+      if (!res.data.length) box.textContent = "Ninguém encontrado.";
+    });
+  }, 350);
+});
+
+/* ---------- Diagnóstico: como cada status foi classificado ---------- */
+
+const STAGE_TXT = { todo: "A fazer", doing: "Em andamento", blocked: "Impedido / Aguardando", feito: "Feito", deploy: "Deploy",
+  qa: "Validação (fila do QA)", validated: "Validado", done: "Concluído" };
+$("btnStatusMap").addEventListener("click", () => {
+  const box = $("statusMap");
+  box.textContent = "Lendo os quadros… (salve antes, se mudou os nomes acima)";
+  chrome.runtime.sendMessage({ type: "STATUS_MAP" }, (res) => {
+    if (chrome.runtime.lastError || !res?.ok) { box.textContent = res?.error || chrome.runtime.lastError?.message || "Falhou."; return; }
+    box.innerHTML = "";
+    for (const sp of res.data) {
+      const h = document.createElement("h3");
+      h.className = "sub";
+      h.textContent = `${sp.project}${sp.board ? ` · quadro ${sp.board.name}` : " · sem quadro"}`;
+      box.appendChild(h);
+      const t = document.createElement("table");
+      t.innerHTML = "<tr><th>Coluna</th><th>Status</th><th>Etapa no QuickFill</th></tr>";
+      for (const s of sp.statuses.sort((a, b) => Object.keys(STAGE_TXT).indexOf(a.stage) - Object.keys(STAGE_TXT).indexOf(b.stage))) {
+        const tr = document.createElement("tr");
+        for (const v of [s.column, s.name, STAGE_TXT[s.stage] || s.stage]) { const td = document.createElement("td"); td.textContent = v; tr.appendChild(td); }
+        if (s.stage === "blocked") tr.className = "st-blocked";
+        t.appendChild(tr);
+      }
+      if (!sp.statuses.length) { const p = document.createElement("p"); p.className = "help"; p.textContent = "Nenhuma coluna lida do quadro."; box.appendChild(p); }
+      else box.appendChild(t);
+    }
+  });
+});
+
+/* ---------- Cor de destaque (paleta igual para todos; padrão = cor do perfil) ---------- */
+
+function renderSwatches() {
+  const box = $("swatches");
+  box.innerHTML = "";
+  const cur = ($("accentColor").value || "").toLowerCase();
+  const pick = (hex) => {
+    $("accentColor").value = hex;
+    applyAccent(hex || ROLE_ACCENT[ROLE]);
+    chrome.storage.sync.set({ accentColor: hex });   // aplica na hora nas telas abertas
+    renderSwatches();
+  };
+  const def = document.createElement("button");
+  def.className = `sw sw-def ${!cur ? "on" : ""}`;
+  def.style.setProperty("--c", ROLE_ACCENT[ROLE]);
+  def.textContent = "Padrão do perfil";
+  def.addEventListener("click", () => pick(""));
+  box.appendChild(def);
+  for (const p of PALETTE) {
+    const b = document.createElement("button");
+    b.className = `sw ${cur === p.hex ? "on" : ""}`;
+    b.style.setProperty("--c", p.hex);
+    b.title = p.name;
+    b.setAttribute("aria-label", p.name);
+    b.addEventListener("click", () => pick(p.hex));
+    box.appendChild(b);
+  }
+  const custom = document.createElement("input");
+  custom.type = "color";
+  custom.className = "sw-custom";
+  custom.title = "Outra cor";
+  custom.value = cur && /^#[0-9a-f]{6}$/i.test(cur) ? cur : ROLE_ACCENT[ROLE];
+  custom.addEventListener("change", () => pick(custom.value.toLowerCase()));
+  box.appendChild(custom);
+}

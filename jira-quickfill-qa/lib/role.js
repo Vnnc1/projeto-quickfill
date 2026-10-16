@@ -7,3 +7,5 @@
  * Gerado pelo build.mjs — não edite à mão.
  */
 export const ROLE = "qa";
+/** update.json do repositório da equipe (aviso de nova versão). Vazio = sem aviso. */
+export const UPDATE_URL = "";

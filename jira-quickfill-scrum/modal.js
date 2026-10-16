@@ -1,10 +1,11 @@
 import { parseDuration, humanize } from "./lib/duration.js";
 import { saveDraft, flushDraft, loadDraft, clearDraft, since } from "./lib/draft.js";
 import { ROLE } from "./lib/role.js";
+import { loadAccent } from "./lib/theme.js";
 import { addDaysIso, isWeekendIso, DAY_MS } from "./lib/dates.js";
-import { totalOf, byIssue, streakAt, averageBefore, averageUntil, periodStats, weekCompare, countedDays, demandBoard, DEMAND_GROUPS } from "./lib/devstats.js";
+import { totalOf, byIssue, streakAt, averageBefore, averageUntil, periodStats, weekCompare, countedDays, demandBoard, deployLabel, feitoLabel, DEMAND_GROUPS } from "./lib/devstats.js";
 import { STAGES, RISKS, DESIGN_STAGES, HANDOFF_ITEMS, TYPE_LABEL, stageOf, typeGroup, normName, sprintHealth, sprintTree, peopleLoad,
-  sprintRisks, returnCauses, designBoard, businessAge, lastMove } from "./lib/teamstats.js";
+  sprintRisks, returnCauses, designBoard, businessAge, lastMove, reopenEvents, qaMatcher, flowMetrics, linkParents } from "./lib/teamstats.js";
 
 /* =====================================================================
    Jira QuickFill — modal
@@ -21,6 +22,12 @@ const HAS_PROG = ROLE === "dev" || ROLE === "design";   // Hoje/Progresso: hist�
 const ROLE_NAME = { qa: "QuickFill QA", dev: "QuickFill DEV", scrum: "QuickFill SCRUM", design: "QuickFill DESIGN" }[ROLE] || "QuickFill";
 document.documentElement.classList.add(`role-${ROLE}`);
 if (IS_DASH) document.documentElement.classList.add("role-dash");
+loadAccent(ROLE);
+/* Onde está aberto: painel lateral do Chrome (página da extensão no topo, sem ?standalone),
+   modal sobre o Jira (iframe) ou janela própria. */
+const inPanel = !inIframe && !params.get("standalone");
+if (inPanel) document.documentElement.classList.add("panel");
+if (inPanel || params.get("standalone")) document.documentElement.classList.add("embedded");
 /* Abas e blocos com data-roles="dev design" só aparecem nesses perfis. */
 document.querySelectorAll("[data-roles]").forEach((e) => e.classList.toggle("role-off", !e.dataset.roles.split(/\s+/).includes(ROLE)));
 
@@ -216,6 +223,12 @@ function setMode(mode, { restoring = false } = {}) {
   if (!restoring && isSpace(state.mode)) saveSpaceFromUI(state.spaceId);
   if (!VIEW_TABS.includes(mode)) state.prevMode = mode;
   if (mode === "team") startTeamPolling(); else stopTeamPolling();
+  if (ROLE === "qa") {
+    // Espaço vale para Painel, Validação, Meu dia e Equipe; Período para as três primeiras (Equipe tem a própria data)
+    $("spaceBar").classList.toggle("hidden", !["panel", "qaq", "day", "team"].includes(mode));
+    $("qaPeriodBar").classList.toggle("hidden", !["panel", "qaq", "day"].includes(mode));
+  }
+  $("scPeriodBar").classList.toggle("hidden", mode === "team");   // Equipe tem a própria data
   state.mode = mode;
 
   document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.mode === mode));
@@ -252,6 +265,7 @@ function setMode(mode, { restoring = false } = {}) {
   } else if (mode === "panel") {
     showForm(false);
     loadPanel();
+    setTimeout(() => $("panelSearch").focus(), 50);
   } else if (mode === "team") {
     showForm(false);
     if (team.data && team.data.date === team.date) renderTeam();
@@ -266,6 +280,7 @@ function setMode(mode, { restoring = false } = {}) {
   }
   $("scroll").scrollTop = 0;
   if (!restoring) touch();
+  saveViewSoon();
 }
 
 function showForm(on) {
@@ -546,6 +561,13 @@ async function findSubtasks() {
     } else if (tree.subtasks.length === 1) {
       busy(false);
       await selectSubtask(tree.subtasks[0].key);
+    } else {
+      // Várias subtarefas: abre direto a "Testes Manuais" que é sua (se houver só uma)
+      const name = String(DEF.subtaskName || "Testes Manuais").toLowerCase();
+      const mine = tree.subtasks.filter((s) => s.mine);
+      const pick = mine.filter((s) => s.summary.toLowerCase().includes(name));
+      const target = pick.length === 1 ? pick[0] : mine.length === 1 ? mine[0] : null;
+      if (target) { busy(false); await selectSubtask(target.key); toast(`${target.key} é a sua — já selecionada.`, "info"); }
     }
     touch();
   } catch (e) { toast(e.message); } finally { busy(false); }
@@ -566,6 +588,25 @@ function renderSubtasks() {
     b.querySelector(".k").textContent = s.key;
     b.querySelector(".s").textContent = s.summary;
     b.querySelector(".st").textContent = s.status;
+    if (s.mine) {
+      const you = document.createElement("span");
+      you.className = "tag-you";
+      you.textContent = "Você";
+      you.title = "Atribuída a você";
+      b.querySelector(".s").after(you);
+      b.classList.add("mine");
+    } else if (s.assignee) {
+      const who = document.createElement("span");
+      who.className = "who";
+      who.textContent = s.assignee.name.split(" ")[0];
+      who.title = `Atribuída a ${s.assignee.name}`;
+      b.querySelector(".s").after(who);
+    } else if (!s.isParent && s.assignee === null) {
+      const who = document.createElement("span");
+      who.className = "who none";
+      who.textContent = "sem responsável";
+      b.querySelector(".s").after(who);
+    }
     if (s.isParent) {
       const tag = document.createElement("span");
       tag.className = "tag-parent";
@@ -1258,14 +1299,31 @@ const daysBetween = (a, b) => Math.round((Date.parse(`${b}T12:00:00Z`) - Date.pa
 
 async function loadPanel({ force = false } = {}) {
   loadSprints({ force });   // em paralelo; falha nas sprints não derruba o painel
-  if (state.panel.data && !force) return renderPanel();
-  $("panelBox").innerHTML = `<p class="muted xs">Carregando suas demandas…</p>`;
+  const P = state.panel;
+  if (!P.restored) {
+    P.restored = true;
+    try { Object.assign(P, JSON.parse(localStorage.getItem("qf.panel") || "{}")); } catch { /* sem storage */ }
+    $("panelSearch").value = P.q || "";
+    if (!P.data) {
+      try { const { panelData } = await chrome.storage.local.get({ panelData: null }); if (panelData?.issues) P.data = panelData; } catch { /* sem cache */ }
+    }
+  }
+  if (P.data) renderPanel();
+  else $("panelBox").innerHTML = `<p class="muted xs">Carregando suas demandas…</p>`;
+  // Sempre atualiza ao abrir (o que já estava aparece na hora)
+  force = force || takeFresh("panel");
+  if (!force && P.data && Date.now() - (P.data.fetchedAt || 0) < 45 * 1000) return;
+  if (canSkipFetch(P.data, force)) return;
+  $("panelInfo").textContent = "atualizando…";
   try {
-    state.panel.data = await send("MY_DASHBOARD", {});
+    const data = await send("MY_DASHBOARD", {});
+    data.fetchedAt = Date.now();
+    P.data = data;
+    chrome.storage.local.set({ panelData: data }).catch(() => {});
     renderPanel();
   } catch (e) {
-    $("panelBox").innerHTML = "";
-    note($("panelBox"), "err", e.message);
+    if (!P.data) { $("panelBox").innerHTML = ""; note($("panelBox"), "err", e.message); }
+    else toast(e.message);
   }
 }
 
@@ -1304,7 +1362,7 @@ function renderSprints() {
   const info = state.sprints;
   if (!info) return;
   for (const sp of info.spaces) {
-    if (IS_DASH && gspace.project && sp.project !== gspace.project) continue;
+    if (gspace.project && sp.project !== gspace.project) continue;
     const card = document.createElement("div");
     card.className = "sprint";
     const top = document.createElement("div");
@@ -1396,22 +1454,49 @@ function renderSprints() {
 /** Filtros de escopo (projeto/tipo) — base dos indicadores. */
 function panelScoped() {
   const { type } = state.panel;
-  const project = IS_DASH ? gspace.project : state.panel.project;
+  const project = gspace.project;
   return (state.panel.data?.issues || []).filter((i) =>
     (!project || i.project === project) &&
     (type === "all" || (type === "sub" ? i.isSubtask : !i.isSubtask)));
 }
 
 /** Escopo + filtros de detalhe (busca, status, indicador clicado). */
+/** Escopo + filtros de detalhe (atalho, busca, status, indicador clicado). */
 function panelFiltered(scoped) {
-  const { q, status, kpi } = state.panel;
-  const term = q.trim().toLowerCase();
+  const { q, status, kpi, quick } = state.panel;
+  const term = (q || "").trim().toLowerCase();
+  const tests = String(DEF.subtaskName || "Testes Manuais").toLowerCase();
   return scoped.filter((i) =>
-    (!term || i.key.toLowerCase().includes(term) || i.summary.toLowerCase().includes(term)) &&
+    (!term || i.key.toLowerCase().includes(term) || i.summary.toLowerCase().includes(term) || (i.parentKey || "").toLowerCase().includes(term)) &&
     (!status || i.status === status) &&
+    (quick !== "doing" || i.statusCategory === "indeterminate") &&
+    (quick !== "todo" || i.statusCategory === "new") &&
+    (quick !== "tests" || (i.isSubtask && i.summary.toLowerCase().includes(tests))) &&
+    (quick !== "moved" || movedInPeriod(i)) &&
     (kpi !== "overdue" || i.overdue) &&
-    (kpi !== "due" || i.dueToday || i.dueWeek) &&
+    (kpi !== "due" || dueInPeriod(i)) &&
     (kpi !== "nodue" || !i.due));
+}
+
+/* ---------- Período do QA (Hoje · 7 · 14 · 30 dias) ---------- */
+
+const QP = { period: "7" };
+try { QP.period = localStorage.getItem("qf.qaPeriod") || "7"; } catch { /* sem storage */ }
+const QP_LABEL = { today: "hoje", 7: "em 7 dias", 14: "em 14 dias", 30: "em 30 dias" };
+const qpDays = () => (QP.period === "today" ? 1 : Number(QP.period));
+const qpFrom = () => Date.parse(`${addDaysIso(todayISO(), -(qpDays() - 1))}T00:00:00`);
+/** Vence dentro do período, contando a partir de hoje (Hoje = vence hoje). */
+const dueInPeriod = (i) => !!i.due && i.due >= todayISO() && i.due <= addDaysIso(todayISO(), qpDays() - 1);
+/** Teve alguma atualização no período. */
+const movedInPeriod = (i) => !!i.updated && Date.parse(i.updated) >= qpFrom();
+
+function setQaPeriod(p) {
+  QP.period = p;
+  document.querySelectorAll("#qaPeriod button").forEach((b) => b.classList.toggle("on", b.dataset.p === p));
+  try { localStorage.setItem("qf.qaPeriod", p); } catch { /* sem storage */ }
+  if (state.mode === "panel") renderPanel();
+  if (state.mode === "qaq") renderQaQueue();
+  if (state.mode === "day") loadDay(state.dayDate);
 }
 
 function renderPanel() {
@@ -1422,7 +1507,9 @@ function renderPanel() {
   // Projeto: Todos + os projetos onde você tem demanda
   const proj = $("panelProject");
   proj.innerHTML = "";
-  for (const p of ["", ...d.projects]) {
+  // Sempre os espaços configurados (MEED e SUS), mesmo sem demanda sua em um deles
+  const spaces = [...new Set([DEF.spaces?.batch?.label, DEF.spaces?.sustentacao?.label, ...d.projects].filter(Boolean))];
+  for (const p of ["", ...spaces]) {
     const b = document.createElement("button");
     b.textContent = p || "Todos";
     b.classList.toggle("on", P.project === p);
@@ -1435,12 +1522,32 @@ function renderPanel() {
   const list = panelFiltered(scoped);
   const box = $("panelBox");
   box.innerHTML = "";
+  try { localStorage.setItem("qf.panel", JSON.stringify({ project: P.project, type: P.type, quick: P.quick || "", q: P.q || "" })); } catch { /* sem storage */ }
+  $("panelInfo").textContent = d.fetchedAt ? `atualizado ${since(d.fetchedAt)}` : "";
+
+  /* --- atalhos: o que você quer ver agora --- */
+  const tests = String(DEF.subtaskName || "Testes Manuais").toLowerCase();
+  const QUICK = [
+    ["", "Todas", scoped.length],
+    ["doing", "Em andamento", scoped.filter((i) => i.statusCategory === "indeterminate").length],
+    ["todo", "A fazer", scoped.filter((i) => i.statusCategory === "new").length],
+    ["tests", DEF.subtaskName || "Testes Manuais", scoped.filter((i) => i.isSubtask && i.summary.toLowerCase().includes(tests)).length],
+    ["moved", `Movimentadas ${QP_LABEL[QP.period]}`, scoped.filter(movedInPeriod).length],
+  ];
+  const quick = el("div", "quick-row");
+  for (const [id, label, n] of QUICK) {
+    const b = el("button", `quick ${(P.quick || "") === id ? "on" : ""}`);
+    b.append(el("b", null, String(n)), el("span", null, label));
+    b.addEventListener("click", () => { P.quick = id; P.status = ""; renderPanel(); });
+    quick.appendChild(b);
+  }
+  box.appendChild(quick);
 
   /* --- indicadores --- */
   const k = {
     open: scoped.length,
     overdue: scoped.filter((i) => i.overdue).length,
-    due: scoped.filter((i) => i.dueToday || i.dueWeek).length,
+    due: scoped.filter(dueInPeriod).length,
     nodue: scoped.filter((i) => !i.due).length,
   };
   const kpis = document.createElement("div");
@@ -1454,10 +1561,10 @@ function renderPanel() {
     t.addEventListener("click", () => { P.kpi = P.kpi === id ? "" : id; renderPanel(); });
     return t;
   };
+  kpis.classList.add("three");
   kpis.append(
-    tile("", k.open, "abertas"),
     tile("overdue", k.overdue, "atrasadas", k.overdue ? "err" : ""),
-    tile("due", k.due, "vencem em 7 dias", k.due ? "warn" : ""),
+    tile("due", k.due, QP.period === "today" ? "vencem hoje" : `vencem em ${QP.period} dias`, k.due ? "warn" : ""),
     tile("nodue", k.nodue, "sem data limite"),
   );
   box.appendChild(kpis);
@@ -1471,7 +1578,8 @@ function renderPanel() {
   t1.className = "card-t";
   t1.append(document.createTextNode("Distribuição por status"));
   const t1s = document.createElement("span");
-  t1s.textContent = `✓ ${d.kpi.doneWeek} concluída${d.kpi.doneWeek === 1 ? "" : "s"} em 7 dias`;
+  const doneN = d.done ? d.done.filter((x) => (x.at || 0) >= qpFrom() && (!gspace.project || x.project === gspace.project)).length : d.kpi.doneWeek;
+  t1s.textContent = `✓ ${doneN} concluída${doneN === 1 ? "" : "s"} ${QP_LABEL[QP.period]}`;
   t1.appendChild(t1s);
   sum.appendChild(t1);
   const hrs = document.createElement("div");
@@ -1483,7 +1591,9 @@ function renderPanel() {
 
   const counts = new Map();
   for (const i of scoped) counts.set(i.status, (counts.get(i.status) || 0) + 1);
-  const statuses = d.statuses.filter((s) => counts.has(s.name));
+  // Em andamento primeiro: é o que você está mexendo agora
+  const CAT = { indeterminate: 0, new: 1, done: 2 };
+  const statuses = d.statuses.filter((s) => counts.has(s.name)).sort((a, b) => (CAT[a.category] ?? 1) - (CAT[b.category] ?? 1) || counts.get(b.name) - counts.get(a.name));
   const used = { new: 0, indeterminate: 0, done: 0 };
   const colorOf = new Map(statuses.map((s) => {
     const pal = CAT_COLORS[s.category] || CAT_COLORS.indeterminate;
@@ -1521,7 +1631,7 @@ function renderPanel() {
   card.className = "card";
   const lt = document.createElement("div");
   lt.className = "card-t";
-  lt.append(document.createTextNode(P.status || (P.kpi === "overdue" ? "Atrasadas" : P.kpi === "due" ? "Vencem em 7 dias" : P.kpi === "nodue" ? "Sem data limite" : "Minhas demandas")));
+  lt.append(document.createTextNode(P.status || (P.kpi === "overdue" ? "Atrasadas" : P.kpi === "due" ? (QP.period === "today" ? "Vencem hoje" : `Vencem em ${QP.period} dias`) : P.kpi === "nodue" ? "Sem data limite" : "Minhas demandas")));
   const lts = document.createElement("span");
   lts.textContent = `${list.length} de ${scoped.length}`;
   lt.appendChild(lts);
@@ -1645,6 +1755,8 @@ document.querySelectorAll("#panelType button").forEach((b) => b.addEventListener
   renderPanel();
 }));
 $("panelRefresh").addEventListener("click", () => loadPanel({ force: true }));
+try { $("sprintWrap").open = localStorage.getItem("qf.sprintWrap") === "1"; } catch { /* sem storage */ }
+$("sprintWrap").addEventListener("toggle", () => { try { localStorage.setItem("qf.sprintWrap", $("sprintWrap").open ? "1" : "0"); } catch { /* sem storage */ } });
 let panelSearchTimer = null;
 $("panelSearch").addEventListener("input", () => {
   clearTimeout(panelSearchTimer);
@@ -1690,7 +1802,7 @@ async function loadTeam({ force = false, silent = false } = {}) {
   if (!silent) $("teamBox").innerHTML = `<p class="muted xs">Carregando a equipe de ${dayShort(date)}…</p>`;
   try {
     const scope = team.scope;
-    const rep = await send("TEAM_REPORT", { date, force, scope, ...(IS_DASH ? { projects: gspace.projects } : {}) });
+    const rep = await send("TEAM_REPORT", { date, force, scope: "cfg", projects: gspace.projects });
     if (rep.date !== team.date || scope !== team.scope) return;   // trocou de dia/escopo no meio do caminho
     team.data = rep;
     team.error = null;
@@ -1814,7 +1926,7 @@ const keyColor = (key) => avatarColor(key);
 function avatarRing(p, size = 46) {
   const R = 20, C = 2 * Math.PI * R;
   const frac = Math.min(1, p.total / Math.max(1, p.goal));
-  const color = p.state === "over" ? "var(--err)" : p.state === "met" ? "var(--ok)" : p.total ? "var(--accent)" : "transparent";
+  const color = p.state === "over" ? "var(--err)" : p.state === "met" ? "var(--ok)" : p.total ? "var(--data)" : "transparent";
   const w = document.createElement("span");
   w.className = "t-ring";
   w.style.width = w.style.height = `${size}px`;
@@ -1841,7 +1953,7 @@ function teamHero(visible, k, total, avg, d) {
   left.querySelector("span").textContent = `${k.logged}/${visible.length} apontaram · média ${fmtDur(avg)}`;
 
   // barra empilhada: quantas pessoas em cada estado
-  const states = [["met", "bateram a meta", "var(--ok)"], ["under", "abaixo da meta", "var(--accent)"], ["over", "acima do teto", "var(--err)"], ["none", "sem apontamento", "var(--surface-3)"]];
+  const states = [["met", "bateram a meta", "var(--ok)"], ["under", "abaixo da meta", "var(--data)"], ["over", "acima do teto", "var(--err)"], ["none", "sem apontamento", "var(--surface-3)"]];
   const right = document.createElement("div");
   right.className = "t-hero-r";
   const bar = document.createElement("div");
@@ -2294,7 +2406,7 @@ async function loadDay(date, { force = false } = {}) {
   const seq = ++daySeq;
   $("dayBox").innerHTML = `<p class="muted xs">Carregando ${dayShort(date)}…</p>`;
   try {
-    const rep = await send("DAY_REPORT", { date, days: 10, force });
+    const rep = await send("DAY_REPORT", { date, days: QP.period === "today" ? 1 : Number(QP.period), force });
     if (seq === daySeq) renderDay(rep);
   } catch (e) {
     if (seq !== daySeq) return;
@@ -2393,14 +2505,21 @@ function renderDay(rawRep) {
   h.className = "card";
   const ht = document.createElement("div");
   ht.className = "card-t";
-  ht.append(document.createTextNode("Últimos dias úteis"));
+  if (rep.history.length <= 1) {   // período "Hoje": só o dia
+    if (rep.date === todayISO()) updateDayPill(rawRep.total, goal);
+    if (rep.scopedTo) note(box, "info", `Mostrando só ${rep.scopedTo}. A pílula do topo soma todos os espaços.`);
+    return;
+  }
+  const histTotal = rep.history.reduce((s, x) => s + x.total, 0);
+  ht.append(document.createTextNode(`Últimos ${rep.history.length} dias úteis${rep.scopedTo ? ` · ${rep.scopedTo}` : ""}`));
   const hts = document.createElement("span");
-  hts.textContent = `meta batida em ${rep.metDays} de ${rep.history.length}`;
+  hts.textContent = `${fmtDur(histTotal)} · média ${fmtDur(histTotal / rep.history.length)} · meta em ${rep.metDays} de ${rep.history.length}`;
   ht.appendChild(hts);
   h.appendChild(ht);
 
   const chart = document.createElement("div");
-  chart.className = "hist";
+  const dense = rep.history.length > 12;   // 14/30 dias: colunas finas e rótulo só com o dia
+  chart.className = `hist${dense ? " dense" : ""}${rep.history.length > 20 ? " xdense" : ""}`;
   // Mesma escala para barras e linha da meta: BAR_PX de área útil acima de LABEL_PX de rótulo.
   const BAR_PX = 80, LABEL_PX = 17;
   const gl = document.createElement("div");
@@ -2418,17 +2537,17 @@ function renderDay(rawRep) {
     bar.className = "b";
     bar.style.height = `${Math.max(2, BAR_PX * Math.min(1, d.total / cap))}px`;
     const lab = document.createElement("small");
-    lab.textContent = `${d.date.slice(8, 10)}/${d.date.slice(5, 7)}`;
+    lab.textContent = dense ? d.date.slice(8, 10) : `${d.date.slice(8, 10)}/${d.date.slice(5, 7)}`;
     col.append(bar, lab);
     col.addEventListener("click", () => loadDay(d.date));
     chart.appendChild(col);
   }
   h.appendChild(chart);
-  h.appendChild(legend([["var(--ok)", "meta batida"], ["var(--accent)", "abaixo da meta"], ["var(--surface-3)", "sem apontamento"]]));
+  h.appendChild(legend([["var(--ok)", "meta batida"], ["var(--data)", "abaixo da meta"], ["var(--surface-3)", "sem apontamento"]]));
   box.appendChild(h);
 
   if (rep.date === todayISO()) updateDayPill(rawRep.total, goal);
-  if (rep.scopedTo) note(box, "info", `Mostrando só ${rep.scopedTo}. O histórico de 10 dias e a pílula do topo somam todos os espaços.`);
+  if (rep.scopedTo) note(box, "info", `Mostrando só ${rep.scopedTo}. A pílula do topo soma todos os espaços.`);
 }
 
 $("dayPrev").addEventListener("click", () => loadDay(businessStep(state.dayDate, -1)));
@@ -2706,6 +2825,7 @@ function setGlobalSpace(project) {
   if (state.mode === "demands") renderDemands();
   if (["sprint", "people", "risks"].includes(state.mode)) renderScrum();
   if (state.mode === "hus") renderHus();
+  if (state.mode === "qaq") renderQaQueue();
   if (state.mode === "panel") { renderPanel(); renderSprints(); }
   if (state.mode === "team") renderTeam();
   if (state.mode === "day" && state.dayRep) renderDay(state.dayRep);
@@ -2715,7 +2835,10 @@ function renderGlobalSpace(projects) {
   gspace.projects = projects;
   const seg = $("globalSpace");
   seg.innerHTML = "";
-  for (const p of ["", ...projects]) {
+  // DESIGN com um único projeto: só ele (o "Todos" seria o mesmo recorte)
+  const single = ROLE === "design" && projects.length === 1;
+  if (single) gspace.project = projects[0];
+  for (const p of single ? projects : ["", ...projects]) {
     const b = document.createElement("button");
     b.dataset.project = p;
     b.textContent = p || "Todos";
@@ -2723,14 +2846,22 @@ function renderGlobalSpace(projects) {
     b.addEventListener("click", () => setGlobalSpace(p));
     seg.appendChild(b);
   }
-  $("spaceInfo").textContent = gspace.project ? "" : projects.join(" + ");
+  $("spaceInfo").textContent = "";
 }
 
-const inSpace = (key) => !IS_DASH || !gspace.project || String(key).split("-")[0] === gspace.project;
+/** DESIGN com espaço próprio: "Todos" = só os projetos de Design (Opções), nunca MEED/SUS. */
+const designOnly = () => (ROLE === "design" && DEF.designProjects?.length ? new Set(DEF.designProjects) : null);
+const inSpace = (key) => {
+  const p = String(key).split("-")[0];
+  if (gspace.project) return p === gspace.project;
+  const only = designOnly();
+  return !only || only.has(p);
+};
 
 /** Equipe só com o que é do espaço escolhido (totais e estado recalculados). */
+/** Equipe só com o que é do espaço escolhido (totais e estado recalculados). */
 function scopedTeam(d) {
-  if (!d || !IS_DASH || !gspace.project) return d;
+  if (!d || (!gspace.project && !designOnly())) return d;
   const people = d.people.map((p) => {
     const entries = p.entries.filter((e) => inSpace(e.key));
     const issues = p.issues.filter((i) => inSpace(i.key));
@@ -2742,12 +2873,19 @@ function scopedTeam(d) {
 }
 
 function scopedDay(rep) {
-  if (!rep || !IS_DASH || !gspace.project) return rep;
+  if (!rep || (!gspace.project && !designOnly())) return rep;
   const entries = rep.entries.filter((e) => inSpace(e.key));
   const issues = rep.issues.filter((i) => inSpace(i.key));
   const total = entries.reduce((sum, e) => sum + e.minutes, 0);
   const { goal, cap } = rep.workday;
-  return { ...rep, entries, issues, total, goalMet: total >= goal, overCap: total > cap, scopedTo: gspace.project };
+  // Histórico também por espaço (o serviço manda a divisão por projeto de cada dia)
+  const history = (rep.history || []).map((h) => {
+    if (!h.projects) return h;
+    const t = Object.entries(h.projects).filter(([p]) => inSpace(`${p}-0`)).reduce((s, [, m]) => s + m, 0);
+    return { ...h, total: t, goalMet: t >= goal, issues: (h.keys || []).filter((k) => inSpace(k)).length };
+  });
+  return { ...rep, entries, issues, total, history, metDays: history.filter((h) => h.goalMet).length,
+    goalMet: total >= goal, overCap: total > cap, scopedTo: gspace.project || (designOnly() ? [...designOnly()].join("+") : "") };
 }
 
 /* =====================================================================
@@ -2816,16 +2954,21 @@ document.addEventListener("scroll", () => tipEl.classList.add("hidden"), true);
    QuickFill DEV — Hoje · Progresso · Demandas
    ===================================================================== */
 
-const PREFS_DEFAULT = { pace: true, streak: true, timeline: true, issues: true, team: true, week: true, where: true, autoRefresh: true };
-const PREF_LABELS = [
-  ["pace", "Ritmo do dia (você x sua média até esta hora)"],
-  ["streak", "Sequência e últimos dias"],
-  ["timeline", "Linha do tempo do dia"],
-  ["issues", "Demandas do dia"],
-  ["team", "Equipe no dia"],
-  ["week", "Esta semana x semana passada (Progresso)"],
-  ["where", "Onde foi seu tempo (Progresso)"],
-  ["autoRefresh", "Atualizar sozinho a cada minuto (Hoje)"],
+const PREFS_DEFAULT = { pace: true, streak: true, history: true, timeline: true, issues: true, team: true, week: true, where: true,
+  autoRefresh: true, refreshMin: 1 };
+const PREF_GROUPS = [
+  ["Hoje", [
+    ["streak", "🔥 Sequência e média (chips)"],
+    ["pace", "Ritmo do dia (você x sua média até esta hora)"],
+    ["timeline", "Linha do tempo do dia"],
+    ["issues", "No que você atuou"],
+    ["history", "Seus últimos dias (barras)"],
+    ["team", "Equipe no dia"],
+  ]],
+  ["Progresso", [
+    ["week", "Esta semana x semana passada"],
+    ["where", "Onde foi seu tempo"],
+  ]],
 ];
 const DV = { prog: null, date: todayISO(), team: null, teamDate: null, prefs: { ...PREFS_DEFAULT }, period: "14", sprints: null,
   dm: null, dmPeriod: "today", dmPrio: "", poll: null, seq: 0, sprintSel: "", onlySprint: true, sprintKeys: new Map() };
@@ -2967,6 +3110,7 @@ async function loadTeamFor(date, { force = false } = {}) {
 
 function startTodayPolling() {
   stopTodayPolling();
+  const every = Math.max(1, Number(DV.prefs.refreshMin) || 1) * 60 * 1000;
   DV.poll = setInterval(async () => {
     if (!DV.prefs.autoRefresh || DV.date !== todayISO() || document.hidden) return;
     try {
@@ -2974,7 +3118,7 @@ function startTodayPolling() {
       if (state.mode === "today") { renderToday(); if (DV.prefs.team) loadTeamFor(DV.date); }
       if (ROLE !== "scrum") refreshDayPill();   // SCRUM não acompanha as próprias horas
     } catch { /* tenta na próxima */ }
-  }, TODAY_POLL_MS);
+  }, every);
 }
 function stopTodayPolling() { if (DV.poll) clearInterval(DV.poll); DV.poll = null; }
 
@@ -2982,7 +3126,7 @@ function stopTodayPolling() { if (DV.poll) clearInterval(DV.poll); DV.poll = nul
 function bigRing(total, goal, cap) {
   const R = 52, C = 2 * Math.PI * R;
   const frac = Math.min(1, total / cap);
-  const color = total > cap ? "var(--err)" : total >= goal ? "var(--ok)" : "var(--accent)";
+  const color = total > cap ? "var(--err)" : total >= goal ? "var(--ok)" : "var(--data)";
   const g = goal / cap;
   const ang = g * 2 * Math.PI - Math.PI / 2;
   const tx = 60 + Math.cos(ang) * R, ty = 60 + Math.sin(ang) * R;
@@ -3091,6 +3235,7 @@ function renderToday() {
   /* --- demandas do dia --- */
   if (DV.prefs.issues) {
     const card = mCard("No que você atuou", total ? `${fmtDur(total)} em ${issues.length}` : "");
+    card.classList.add("half");
     if (!issues.length) card.appendChild(el("p", "muted xs", isToday ? "Assim que você apontar no Jira, aparece aqui." : "Nenhum apontamento neste dia."));
     for (const it of issues) {
       const share = el("span", "dv-share");
@@ -3109,9 +3254,10 @@ function renderToday() {
   }
 
   /* --- últimos dias --- */
-  if (DV.prefs.streak) {
+  if (DV.prefs.history) {
     const days = countedDays(prog, addDaysIso(d, -20), d).slice(-10);
     const card = mCard("Seus últimos dias", `${days.filter((x) => totalOf(prog, x) >= goal).length}/${days.length} com meta`);
+    card.classList.add("half");
     const strip = el("div", "dv-strip");
     const max = Math.max(cap, ...days.map((x) => totalOf(prog, x)));
     for (const x of days) {
@@ -3134,13 +3280,15 @@ function renderToday() {
   /* --- equipe --- */
   if (DV.prefs.team) {
     const card = mCard("Equipe no dia", "");
+    card.classList.add("half");
     card.id = "dvTeam";
     card.appendChild(el("p", "muted xs", "Carregando a equipe…"));
     box.appendChild(card);
     if (DV.team && DV.teamDate === d) renderTeamToday();
   }
 
-  const foot = el("p", "muted xs m-foot", `Atualizado ${since(DV.prog.fetchedAt)}${isToday && DV.prefs.autoRefresh ? " · atualiza sozinho a cada minuto" : ""}.`);
+  const every = Math.max(1, Number(DV.prefs.refreshMin) || 1);
+  const foot = el("p", "muted xs m-foot", `Atualizado ${since(DV.prog.fetchedAt)}${isToday && DV.prefs.autoRefresh ? ` · atualiza sozinho a cada ${every === 1 ? "minuto" : `${every} minutos`}` : ""}.`);
   box.appendChild(foot);
   if (isToday) updateDayPill(totalOf(DV.prog, d), goal);
 }
@@ -3202,20 +3350,23 @@ function renderCustom() {
   head.append(el("b", null, "Personalizar"), el("span", null, "vale só para você, neste navegador"));
   box.appendChild(head);
 
+  /* meta diária (salva nas Opções, vale para a pílula, o Hoje, o Progresso e a Equipe) */
   const goalRow = el("div", "cu-goal");
   const goalH = () => (DV.prog?.workday.goal ?? DEF.workday.goal) / 60;
   const capH = (DV.prog?.workday.cap ?? DEF.workday.cap) / 60;
   const val = el("b", null, `${String(goalH()).replace(".", ",")}h`);
   const step = async (delta) => {
     const next = Math.min(capH, Math.max(0.5, goalH() + delta));
+    if (next === goalH()) return toast(delta > 0 ? `A meta não passa do teto de ${fmtDur(capH * 60)}.` : "A meta mínima é 30m.", "info");
     try {
       const r = await send("SAVE_GOAL", { goalHours: next });
       DEF.workday.goal = r.goal;
-      if (DV.prog) DV.prog.workday.goal = r.goal;
+      if (DV.prog) { DV.prog.workday.goal = r.goal; persistProg(); }
       val.textContent = `${String(r.goal / 60).replace(".", ",")}h`;
       $("dayPillGoal").textContent = `meta ${fmtDur(r.goal)}`;
-      renderToday();
+      if (state.mode === "today") renderToday();
       refreshDayPill();
+      toast(`Meta diária: ${fmtDur(r.goal)}.`, "ok");
     } catch (e) { toast(e.message); }
   };
   const minus = el("button", "ic bordered", "−"); minus.addEventListener("click", () => step(-0.5));
@@ -3223,22 +3374,61 @@ function renderCustom() {
   goalRow.append(el("span", null, "Meta diária"), minus, val, plus, el("small", "muted", `teto ${fmtDur(capH * 60)}`));
   box.appendChild(goalRow);
 
-  const list = el("div", "cu-list");
-  for (const [k, label] of PREF_LABELS) {
-    const l = el("label", "cu-item");
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = !!DV.prefs[k];
-    cb.addEventListener("change", () => {
-      DV.prefs[k] = cb.checked;
-      savePrefs();
-      if (state.mode === "today") renderToday();
-      if (k === "team" && cb.checked) loadTeamFor(DV.date);
-    });
-    l.append(cb, el("span", null, label));
-    list.appendChild(l);
+  /* blocos de cada tela — aplicam na hora */
+  for (const [title, items] of PREF_GROUPS) {
+    box.appendChild(el("div", "m-sub", title));
+    const list = el("div", "cu-list");
+    for (const [k, label] of items) {
+      const l = el("label", "cu-item");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!DV.prefs[k];
+      cb.addEventListener("change", () => {
+        DV.prefs[k] = cb.checked;
+        savePrefs();
+        if (state.mode === "today") renderToday();
+        if (state.mode === "progress") renderProgress();
+        if (k === "team" && cb.checked) loadTeamFor(DV.date);
+      });
+      l.append(cb, el("span", null, label));
+      list.appendChild(l);
+    }
+    box.appendChild(list);
   }
-  box.appendChild(list);
+
+  /* atualização automática */
+  const ar = el("div", "cu-goal");
+  const cb = document.createElement("input");
+  cb.type = "checkbox"; cb.checked = !!DV.prefs.autoRefresh;
+  const sel = el("select", "inp sm num");
+  for (const m of [1, 2, 5, 10]) sel.appendChild(new Option(m === 1 ? "1 min" : `${m} min`, String(m)));
+  sel.value = String(DV.prefs.refreshMin || 1);
+  sel.disabled = !cb.checked;
+  const apply = () => {
+    DV.prefs.autoRefresh = cb.checked;
+    DV.prefs.refreshMin = Number(sel.value);
+    sel.disabled = !cb.checked;
+    savePrefs();
+    if (state.mode === "today") { startTodayPolling(); renderToday(); }
+  };
+  cb.addEventListener("change", apply);
+  sel.addEventListener("change", apply);
+  const lab = el("label", "cu-item grow");
+  lab.append(cb, el("span", null, "Atualizar o Hoje sozinho a cada"));
+  ar.append(lab, sel);
+  box.appendChild(ar);
+
+  const bar = el("div", "row-end");
+  const reset = el("button", "btn sm", "Restaurar padrão");
+  reset.addEventListener("click", () => {
+    DV.prefs = { ...PREFS_DEFAULT };
+    savePrefs();
+    renderCustom();
+    if (state.mode === "today") { startTodayPolling(); renderToday(); }
+    toast("Blocos restaurados.", "ok");
+  });
+  bar.appendChild(reset);
+  box.appendChild(bar);
 }
 
 /* ---------------- Progresso ---------------- */
@@ -3254,9 +3444,21 @@ function sprintOptions() {
   return out;
 }
 
+/**
+ * Sprint escolhida. "all" = todas as sprints atuais juntas (MEED + SUS): o período vai do início
+ * da primeira ao fim da última e só contam as horas em demandas dessas sprints.
+ */
 function selectedSprint() {
   const opts = sprintOptions();
-  return opts.find((o) => String(o.id) === String(DV.sprintSel)) || opts.find((o) => o.current) || opts[0] || null;
+  const current = opts.filter((o) => o.current);
+  const wantAll = DV.sprintSel === "all" || (!DV.sprintSel && !gspace.project && current.length > 1);
+  if (wantAll && current.length > 1) {
+    const start = current.map((o) => o.start).sort()[0];
+    const end = current.map((o) => o.end || todayISO()).sort().at(-1);
+    return { id: "all", all: true, parts: current, name: "Sprints atuais", space: current.map((o) => o.space).join(" + "),
+      project: "", start, end, current: true, goal: "" };
+  }
+  return opts.find((o) => String(o.id) === String(DV.sprintSel)) || current[0] || opts[0] || null;
 }
 
 function progressRange() {
@@ -3284,17 +3486,17 @@ function renderSprintPicker() {
   if (DV.period !== "sprint") return;
   const sel = $("pgSprint");
   const opts = sprintOptions();
+  const current = opts.filter((o) => o.current);
   const cur = selectedSprint();
   sel.innerHTML = "";
+  if (current.length > 1) sel.appendChild(new Option(`Todas as sprints atuais (${current.map((o) => o.space).join(" + ")})`, "all"));
   for (const o of opts) {
-    const op = new Option(`${o.space} · ${o.name} · ${brShort(o.start)}→${o.end ? brShort(o.end) : "?"}${o.current ? " · atual" : ""}`, String(o.id));
-    sel.appendChild(op);
+    sel.appendChild(new Option(`${o.space} · ${o.name} · ${brShort(o.start)}→${o.end ? brShort(o.end) : "?"}${o.current ? " · atual" : ""}`, String(o.id)));
   }
   if (!opts.length) sel.appendChild(new Option("Nenhuma sprint encontrada", ""));
   const errs = (DV.sprints?.spaces || []).filter((x) => (!gspace.project || x.project === gspace.project) && x.error).map((x) => x.error);
   $("pgSprintErr").textContent = !opts.length && errs.length ? errs.join(" · ") : "";
   if (cur) sel.value = String(cur.id);
-  $("pgOnlySprint").checked = DV.onlySprint;
 }
 
 async function loadProgress({ force = false } = {}) {
@@ -3302,13 +3504,10 @@ async function loadProgress({ force = false } = {}) {
   if (!DV.prog) $("progressBox").innerHTML = `<p class="muted xs">Carregando seu histórico…</p>`;
   else $("progressBox").classList.add("loading");
   try {
-    if (DV.period === "sprint" && (!DV.sprints || force)) DV.sprints = await send("SPRINT_INFO", { force }).catch(() => ({ spaces: [] }));
+    if (DV.period === "sprint" && (!DV.sprints || force)) DV.sprints = await send("SPRINT_INFO", { force, ...sprintScope() }).catch(() => ({ spaces: [] }));
     renderSprintPicker();
     const r = progressRange();
-    if (r.sprint && DV.onlySprint && !DV.sprintKeys.has(String(r.sprint.id))) {
-      const k = await send("SPRINT_KEYS", { sprintId: r.sprint.id }).catch(() => null);
-      if (k) DV.sprintKeys.set(String(r.sprint.id), new Set(k.keys));
-    }
+    if (r.sprint) await sprintKeysFor(r.sprint);
     // período anterior do mesmo tamanho, para comparar
     const len = Math.round((Date.parse(r.to) - Date.parse(r.from)) / DAY_MS) + 1;
     await ensureProg(addDaysIso(r.from, -len), { force });
@@ -3323,27 +3522,56 @@ async function loadProgress({ force = false } = {}) {
   }
 }
 
-function sprintCard(r, st, keysUsed) {
+/** DESIGN lê as sprints do próprio espaço; DEV, as de MEED e SUS. */
+const sprintScope = () => (ROLE === "design" && DEF.designProjects?.length ? { projects: DEF.designProjects } : {});
+
+/** Chaves das demandas da sprint (ou da união das sprints atuais, em "Todas"). */
+async function sprintKeysFor(sp) {
+  const parts = sp.all ? sp.parts : [sp];
+  for (const p of parts) {
+    if (DV.sprintKeys.has(String(p.id))) continue;
+    const k = await send("SPRINT_KEYS", { sprintId: p.id }).catch(() => null);
+    if (k) DV.sprintKeys.set(String(p.id), new Set(k.keys));
+  }
+  if (sp.all) DV.sprintKeys.set("all", new Set(parts.flatMap((p) => [...(DV.sprintKeys.get(String(p.id)) || [])])));
+  return DV.sprintKeys.get(String(sp.id)) || null;
+}
+
+const PROJ_COLORS = ["var(--data)", "#9f8fef", "#6cc3e0", "#fea362"];
+const projColor = (p) => PROJ_COLORS[Math.max(0, gspace.projects.indexOf(p)) % PROJ_COLORS.length];
+
+function sprintCard(r, st) {
   const sp = r.sprint;
   const today = todayISO();
-  const all = daysOfRange(sp.start, r.end).filter((d) => !isWeekendIso(d));
-  const done = all.filter((d) => d <= today).length;
   const card = el("div", "card pg-sprint");
+  const parts = sp.all ? sp.parts : [sp];
   const top = el("div", "pg-sprint-top");
-  top.append(el("span", "sp-space", sp.space), el("b", null, sp.name),
-    el("span", `pg-sprint-st ${sp.current ? "on" : ""}`, sp.current ? (today > r.end ? "encerra hoje" : `faltam ${all.length - done} dia(s) útil(eis)`) : "encerrada"));
+  if (sp.all) top.append(el("b", null, "Todas as sprints atuais"), el("span", "pg-sprint-st on", parts.map((p) => p.space).join(" + ")));
+  else {
+    const all = daysOfRange(sp.start, r.end).filter((d) => !isWeekendIso(d));
+    const done = all.filter((d) => d <= today).length;
+    top.append(el("span", "sp-space", sp.space), el("b", null, sp.name),
+      el("span", `pg-sprint-st ${sp.current ? "on" : ""}`, sp.current ? (today > r.end ? "encerra hoje" : `faltam ${all.length - done} dia(s) útil(eis)`) : "encerrada"));
+  }
   card.appendChild(top);
-  card.appendChild(el("div", "muted xs", `${brShort(sp.start)} → ${brShort(r.end)} · dia ${Math.min(done, all.length)} de ${all.length} úteis`));
-  const bar = el("div", "meter-line");
-  const fill = el("i");
-  fill.style.width = `${(Math.min(done, all.length) / Math.max(1, all.length)) * 100}%`;
-  bar.appendChild(fill);
-  card.appendChild(bar);
-  const info = (DV.sprints?.spaces || []).find((x) => x.project === sp.project)?.active?.find((a) => String(a.id) === String(sp.id));
-  const bits = [`você: ${fmtDur(st.total)} ${keysUsed ? "em demandas da sprint" : "no período"}`];
-  if (info?.stats) bits.push(`${info.stats.done} de ${info.stats.total} concluídas na sprint`, `suas: ${info.stats.mineDone}/${info.stats.mine}`);
-  card.appendChild(el("div", "pg-sprint-bits", bits.join(" · ")));
-  if (sp.goal) card.appendChild(el("div", "muted xs", `Objetivo: ${sp.goal}`));
+  for (const p of parts) {
+    const end = p.end || today;
+    const all = daysOfRange(p.start, end).filter((d) => !isWeekendIso(d));
+    const done = all.filter((d) => d <= today).length;
+    const row = el("div", "pg-sprint-row");
+    if (sp.all) row.append(el("span", "sp-space", p.space), el("b", "xs", p.name));
+    row.append(el("span", "muted xs", `${brShort(p.start)} → ${brShort(end)} · dia ${Math.min(done, all.length)} de ${all.length} úteis`));
+    card.appendChild(row);
+    const bar = el("div", "meter-line");
+    const fill = el("i");
+    fill.style.width = `${(Math.min(done, all.length) / Math.max(1, all.length)) * 100}%`;
+    bar.appendChild(fill);
+    card.appendChild(bar);
+    const info = (DV.sprints?.spaces || []).find((x) => x.project === p.project)?.active?.find((a) => String(a.id) === String(p.id));
+    if (info?.stats) card.appendChild(el("div", "pg-sprint-bits", `${info.stats.done} de ${info.stats.total} concluídas na sprint · suas: ${info.stats.mineDone}/${info.stats.mine}`));
+    if (p.goal) card.appendChild(el("div", "muted xs", `Objetivo: ${p.goal}`));
+  }
+  card.appendChild(el("div", "pg-sprint-bits", `Você: ${fmtDur(st.total)} em ${st.activeIssues} demanda(s) da${sp.all ? "s" : ""} sprint${sp.all ? "s" : ""}.`));
   return card;
 }
 
@@ -3354,16 +3582,19 @@ function renderProgress() {
   const r = progressRange();
   if (r.from < prog.from) { loadProgress(); return; }
   box.innerHTML = "";
-  const keys = r.sprint && DV.onlySprint ? DV.sprintKeys.get(String(r.sprint.id)) || null : null;
-  const st = periodStats(prog, r.from, r.to, { keys });
-  // Meta do dia é sobre o dia todo: dias com meta, média e sequência usam todas as horas.
-  const day = keys ? periodStats(prog, r.from, r.to) : st;
+  // Sprint: só as horas em demandas da(s) sprint(s) — metas, média, sequência e gráficos refletem isso.
+  const keys = r.sprint ? DV.sprintKeys.get(String(r.sprint.id)) || null : null;
+  const only = ROLE === "design" && DEF.designProjects?.length && !gspace.project ? new Set(DEF.designProjects) : null;
+  const st = periodStats(prog, r.from, r.to, { keys, projects: only });
+  const whole = keys ? periodStats(prog, r.from, r.to, { projects: only }) : st;
   const len = st.series.length;
   const prevFrom = addDaysIso(r.from, -len), prevTo = addDaysIso(r.from, -1);
-  const prev = !r.sprint && prevFrom >= prog.from ? periodStats(prog, prevFrom, prevTo) : null;
+  const prev = !r.sprint && prevFrom >= prog.from ? periodStats(prog, prevFrom, prevTo, { projects: only }) : null;
   const streakNow = streakAt(prog, todayISO());
+  let streak = 0;
+  for (const x of st.series.filter((y) => y.counted && y.date <= todayISO()).reverse()) { if (x.total >= st.goal) streak++; else break; }
 
-  if (r.sprint) box.appendChild(sprintCard(r, st, !!keys));
+  if (r.sprint) box.appendChild(sprintCard(r, st));
   else {
     const head = el("div", "m-head");
     head.append(el("b", null, `${brShort(r.from)} → ${brShort(r.to)}${gspace.project ? ` · ${gspace.project}` : ""}`),
@@ -3382,27 +3613,42 @@ function renderProgress() {
   };
   const dTot = prev ? st.total - prev.total : null;
   k.append(
-    tile(fmtDur(st.total), keys ? "na sprint" : "apontadas", keys ? `de ${fmtDur(day.total)} no período` : dTot == null ? "" : `${dTot >= 0 ? "▲ +" : "▼ −"}${fmtDur(Math.abs(dTot))} vs anterior`, "",
-      keys ? "Horas em demandas da sprint (e subtarefas delas) x todas as suas horas nas datas da sprint" : "Soma no período"),
-    tile(fmtDur(day.avg), "por dia útil", `meta ${fmtDur(day.goal)}`, day.avg >= day.goal ? "ok" : "", "Média por dia útil, com todas as horas (fim de semana só conta se tiver apontamento)"),
-    tile(`${day.metDays}/${day.counted}`, "dias com meta", day.counted ? pct(day.metDays / day.counted) : "", day.counted && day.metDays / day.counted >= 0.8 ? "ok" : "", "Dias em que você bateu a meta diária"),
-    tile(`🔥 ${streakNow.days}`, "sequência atual", `melhor no período: ${day.bestStreak}`, streakNow.days >= 3 ? "ok" : "", "Dias úteis seguidos batendo a meta"),
+    tile(fmtDur(st.total), keys ? "na sprint" : "apontadas",
+      keys ? (whole.total > st.total ? `${fmtDur(whole.total - st.total)} fora da sprint` : "todas em demandas da sprint")
+        : dTot == null ? "" : `${dTot >= 0 ? "▲ +" : "▼ −"}${fmtDur(Math.abs(dTot))} vs anterior`, "",
+      keys ? "Horas em demandas da(s) sprint(s) e nas subtarefas delas" : "Soma no período"),
+    tile(fmtDur(st.avg), "por dia útil", `meta ${fmtDur(st.goal)}`, st.avg >= st.goal ? "ok" : "", "Média por dia útil (fim de semana só conta se tiver apontamento)"),
+    tile(`${st.metDays}/${st.counted}`, "dias com meta", st.counted ? pct(st.metDays / st.counted) : "", st.counted && st.metDays / st.counted >= 0.8 ? "ok" : "", "Dias em que você bateu a meta diária"),
+    tile(`🔥 ${keys ? streak : streakNow.days}`, "sequência atual", `melhor no período: ${st.bestStreak}`, (keys ? streak : streakNow.days) >= 3 ? "ok" : "", "Dias úteis seguidos batendo a meta"),
   );
   box.appendChild(k);
 
-  /* --- dia a dia (na sprint, até o último dia dela) --- */
-  const card = mCard("Dia a dia", "clique num dia para abrir");
+  /* --- dia a dia (empilhado por espaço; na sprint, até o último dia dela) --- */
+  const projs = [...new Set(st.series.flatMap((x) => Object.keys(x.projects || {})))].sort((a, b) => gspace.projects.indexOf(a) - gspace.projects.indexOf(b));
+  const card = mCard("Dia a dia", projs.length > 1 ? "por espaço · clique num dia para abrir" : "clique num dia para abrir");
   const chart = el("div", "pg-chart");
-  const future = r.end && r.end > r.to ? daysOfRange(addDaysIso(r.to, 1), r.end).filter((d) => !isWeekendIso(d)).map((d) => ({ date: d, total: 0, future: true })) : [];
-  const days = [...day.series.filter((x) => x.counted || x.total), ...future];
+  const future = r.end && r.end > r.to ? daysOfRange(addDaysIso(r.to, 1), r.end).filter((d) => !isWeekendIso(d)).map((d) => ({ date: d, total: 0, projects: {}, future: true })) : [];
+  const days = [...st.series.filter((x) => x.counted || x.total), ...future];
   const max = Math.max(st.cap, ...days.map((x) => x.total));
   for (const x of days) {
     const col = el("button", "pg-col" + (x.date === todayISO() ? " cur" : "") + (x.future ? " fut" : ""));
-    const b = el("i", x.total > st.cap ? "over" : x.total >= st.goal ? "met" : x.total ? "part" : "");
-    b.style.height = `${Math.max(x.total ? 3 : 0, (x.total / max) * 100)}%`;
+    const stack = el("span", `pg-stack ${x.total > st.cap ? "over" : x.total >= st.goal ? "met" : ""}`);
+    stack.style.height = `${Math.max(x.total ? 3 : 0, (x.total / max) * 100)}%`;
+    if (projs.length > 1) {
+      for (const p of projs) {
+        const m = x.projects?.[p] || 0;
+        if (!m) continue;
+        const sg = el("i"); sg.style.flex = String(m); sg.style.background = projColor(p);
+        stack.appendChild(sg);
+      }
+    } else {
+      const sg = el("i", x.total > st.cap ? "over" : x.total >= st.goal ? "met" : x.total ? "part" : ""); sg.style.flex = "1";
+      stack.appendChild(sg);
+    }
     const lab = el("small", null, days.length > 12 ? x.date.slice(8, 10) : `${DOW[new Date(`${x.date}T12:00:00Z`).getUTCDay()]} ${x.date.slice(8, 10)}`);
-    col.append(b, lab);
-    col.dataset.tip = x.future ? `${dayShort(x.date)} · ainda vem` : `${dayShort(x.date)}\n${x.total ? fmtDur(x.total) : "sem apontamento"}${x.total >= st.goal ? " · meta ✓" : ""}${x.total > st.cap ? " · acima do teto" : ""}`;
+    col.append(stack, lab);
+    const split = projs.length > 1 && x.total ? `\n${projs.filter((p) => x.projects?.[p]).map((p) => `${p} ${fmtDur(x.projects[p])}`).join(" · ")}` : "";
+    col.dataset.tip = x.future ? `${dayShort(x.date)} · ainda vem` : `${dayShort(x.date)}\n${x.total ? fmtDur(x.total) : "sem apontamento"}${x.total >= st.goal ? " · meta ✓" : ""}${x.total > st.cap ? " · acima do teto" : ""}${split}`;
     if (!x.future) col.addEventListener("click", () => { DV.date = x.date; setMode("today"); });
     chart.appendChild(col);
   }
@@ -3411,8 +3657,10 @@ function renderProgress() {
   gl.dataset.label = `meta ${fmtDur(st.goal)}`;
   chart.appendChild(gl);
   card.appendChild(chart);
-  card.appendChild(legend([["var(--ok)", "meta batida"], ["var(--accent)", "abaixo da meta"], ["var(--err)", "acima do teto"]]));
-  if (day.best?.total) card.appendChild(el("p", "muted xs", `Seu melhor dia: ${dayShort(day.best.date)} com ${fmtDur(day.best.total)}.${day.emptyDays ? ` ${day.emptyDays} dia(s) útil(eis) sem apontamento.` : ""}`));
+  card.appendChild(projs.length > 1
+    ? legend(projs.map((p) => [projColor(p), `${p} ${fmtDur(st.projects[p] || 0)}`]))
+    : legend([["var(--ok)", "meta batida"], ["var(--data)", "abaixo da meta"], ["var(--err)", "acima do teto"]]));
+  if (st.best?.total) card.appendChild(el("p", "muted xs", `Seu melhor dia: ${dayShort(st.best.date)} com ${fmtDur(st.best.total)}.${st.emptyDays ? ` ${st.emptyDays} dia(s) útil(eis) sem apontamento${keys ? " em demandas da sprint" : ""}.` : ""}`));
   box.appendChild(card);
 
   /* --- semana x semana --- */
@@ -3426,29 +3674,49 @@ function renderProgress() {
     }
   }
 
-  /* --- onde foi seu tempo --- */
+  /* --- onde foi seu tempo (segue o filtro: período ou sprint) --- */
   if (DV.prefs.where && st.issues.length) {
-    const c = mCard("Onde foi seu tempo", `${st.activeIssues} demanda(s)`);
-    const top = st.issues.slice(0, 6);
-    const rest = st.issues.slice(6).reduce((sum, x) => sum + x.minutes, 0);
+    const c = mCard("Onde foi seu tempo", `${st.activeIssues} demanda(s) · ${r.sprint ? (r.sprint.all ? "sprints atuais" : r.sprint.name) : r.label}`);
+    const proj = Object.entries(st.projects).sort((a, b) => b[1] - a[1]);
+    if (proj.length > 1) {
+      const pb = el("div", "stackbar tall");
+      for (const [p, m] of proj) {
+        const sg = el("i", null, `${p} ${pct(m / st.total)}`); sg.style.flex = String(m / st.total); sg.style.background = projColor(p);
+        sg.dataset.tip = `${p}: ${fmtDur(m)} (${pct(m / st.total)})`;
+        pb.appendChild(sg);
+      }
+      c.append(el("div", "m-sub", "Por espaço"), pb, el("div", "m-sub", "Por demanda"));
+    }
+    const top = st.issues.slice(0, 8);
+    const rest = st.issues.slice(8).reduce((sum, x) => sum + x.minutes, 0);
     const bar = el("div", "stackbar tall");
     top.forEach((it, i) => {
       const sg = el("i");
       sg.style.flex = String(it.minutes / st.total);
       sg.style.background = ISSUE_COLORS[i % ISSUE_COLORS.length];
-      sg.dataset.tip = `${it.key} · ${it.summary}\n${fmtDur(it.minutes)} (${pct(it.minutes / st.total)})`;
+      sg.dataset.tip = `${it.key} · ${it.summary}\n${fmtDur(it.minutes)} (${pct(it.minutes / st.total)}) em ${it.days} dia(s)`;
       bar.appendChild(sg);
     });
-    if (rest) { const sg = el("i"); sg.style.flex = String(rest / st.total); sg.style.background = "var(--surface-3)"; sg.dataset.tip = `Outras ${st.issues.length - 6}: ${fmtDur(rest)}`; bar.appendChild(sg); }
+    if (rest) { const sg = el("i"); sg.style.flex = String(rest / st.total); sg.style.background = "var(--surface-3)"; sg.dataset.tip = `Outras ${st.issues.length - 8}: ${fmtDur(rest)}`; bar.appendChild(sg); }
     c.appendChild(bar);
+    // Para cada demanda, a atuação dia a dia no período (um quadrinho por dia útil)
+    const cols = st.series.filter((x) => x.counted).map((x) => x.date);
     top.forEach((it, i) => {
-      const line = issueLine(it, `${fmtDur(it.minutes)} · ${pct(it.minutes / st.total)}`, `${it.status}${it.parentKey ? ` · ↳ ${it.parentKey}` : ""}`);
+      const line = issueLine(it, `${fmtDur(it.minutes)} · ${pct(it.minutes / st.total)}`, `${it.status}${it.parentKey ? ` · ↳ ${it.parentKey}` : ""} · ${it.days} dia(s)`);
       const dot = el("i", "dv-dot"); dot.style.background = ISSUE_COLORS[i % ISSUE_COLORS.length];
       line.prepend(dot);
+      const strip = el("div", "pg-days");
+      const peak = Math.max(...Object.values(it.byDay));
+      for (const d of cols.slice(-31)) {
+        const m = it.byDay[d] || 0;
+        const cell = el("i");
+        if (m) { cell.style.background = ISSUE_COLORS[i % ISSUE_COLORS.length]; cell.style.opacity = String(0.35 + 0.65 * (m / peak)); }
+        cell.dataset.tip = `${dayShort(d)} · ${m ? fmtDur(m) : "—"}`;
+        strip.appendChild(cell);
+      }
+      line.querySelector(".m-row-main").appendChild(strip);
       c.appendChild(line);
     });
-    const proj = Object.entries(st.projects).sort((a, b) => b[1] - a[1]);
-    if (proj.length > 1) c.appendChild(el("p", "muted xs", `Por espaço: ${proj.map(([p, m]) => `${p} ${fmtDur(m)} (${pct(m / st.total)})`).join(" · ")}`));
     box.appendChild(c);
   }
 }
@@ -3456,6 +3724,7 @@ function renderProgress() {
 /* ---------------- Demandas ---------------- */
 
 async function loadDemands({ force = false } = {}) {
+  force = force || takeFresh("demands");
   const seq = ++DV.seq;
   if (!DV.dm) {
     try {
@@ -3463,6 +3732,7 @@ async function loadDemands({ force = false } = {}) {
       if (cached?.issues && !DV.dm) { DV.dm = cached; renderDemands(); }
     } catch { /* sem cache */ }
   }
+  if (canSkipFetch(DV.dm, force)) { renderDemands(); return; }
   if (!DV.dm) $("demandsBox").innerHTML = `<p class="muted xs">Lendo suas demandas…</p>`;
   $("dmInfo").textContent = DV.dm ? "atualizando…" : "";
   try {
@@ -3501,14 +3771,17 @@ function renderDemands() {
   const box = $("demandsBox");
   box.innerHTML = "";
   const b = demandBoard(dm, { mode: DV.dmPeriod, project: gspace.project });
-  $("dmInfo").textContent = `${DV.dmPeriod === "today" ? "movimentadas hoje" : `movimentadas desde ${brShort(b.since)}`} · atualizado ${since(dm.generatedAt)}`;
+  const deployName = deployLabel(gspace.project, { batch: DEF.spaces?.batch?.label, sustentacao: DEF.spaces?.sustentacao?.label });
+  const feitoName = feitoLabel(gspace.project, { batch: DEF.spaces?.batch?.label, sustentacao: DEF.spaces?.sustentacao?.label });
+  const label = (g) => (g.id === "deploy" ? deployName : g.id === "feito" ? feitoName : g.label);
+  $("dmInfo").textContent = `${DV.dmPeriod === "today" ? "colunas: o que entrou hoje" : `colunas: o que entrou desde ${brShort(b.since)}`} · atualizado ${since(dm.generatedAt)}`;
 
-  /* --- resumo por coluna --- */
-  const sum = el("div", "dm-sum six");
+  /* --- resumo por coluna (Em andamento, Impedido, Reaberto, Feito, Deploy, Validação, Finalizados) --- */
+  const sum = el("div", "dm-sum seven");
   for (const g of DEMAND_GROUPS) {
     const n = b.groups[g.id].length;
-    const t = el("button", `dm-tile k-${g.id} ${n ? "has" : ""}`);
-    t.append(el("b", null, String(n)), el("span", null, `${g.icon} ${g.label}`));
+    const t = el("button", `dm-tile k-${g.id} ${n ? "has" : ""} ${g.id === "blocked" && n ? "err" : ""}`);
+    t.append(el("b", null, String(n)), el("span", null, `${g.icon} ${label(g)}`));
     t.addEventListener("click", () => document.getElementById(`dm-${g.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }));
     sum.appendChild(t);
   }
@@ -3527,61 +3800,88 @@ function renderDemands() {
     box.appendChild(pr);
   }
 
-  const parts = [];
-  if (b.worked) parts.push(`você apontou em ${b.worked} demanda(s) ${DV.dmPeriod === "today" ? "hoje" : "no período"}`);
-  if (b.groups.shipped.length) parts.push(`${b.firstPass} de ${b.groups.shipped.length} entregues passaram de primeira`);
-  if (b.extra.todo.length) parts.push(`${b.extra.todo.length} a fazer em seu nome`);
-  if (parts.length) { const p = el("div", "dv-pace up"); p.append(el("b", null, "★"), el("span", null, `${parts.join(" · ")}.`)); box.appendChild(p); }
-
   const est = (i) => (i.estimate ? `${fmtDur(i.spent)} / ${fmtDur(i.estimate)}` : i.myMinutes ? `${fmtDur(i.myMinutes)} seus` : "");
   const matchPrio = (r) => !DV.dmPrio || (r.issue.priority?.id || "-") === DV.dmPrio;
-  let shown = 0;
-  for (const g of DEMAND_GROUPS) {
-    const rows = b.groups[g.id].filter(matchPrio);
+  const KIND_TXT = { other: "Em andamento", blocked: "Impedido", reopen: "Reaberto", todo: "A fazer" };
+
+  /* --- 1º: em seu nome agora (pendentes), com a demanda em que você está atuando em destaque --- */
+  const pend = b.pending.filter(matchPrio);
+  if (pend.length) {
+    const c = mCard("📌 Em seu nome agora", `${pend.length} pendente(s)`);
+    c.id = "dm-doing";
+    for (const r of pend.slice(0, 20)) {
+      const i = r.issue;
+      const right = el("span", "dm-right");
+      right.append(prioPill(i.priority), el("span", "m-row-r", r.today ? `hoje ${fmtDur(r.today)}` : fmtSpan(r.ageMs)));
+      const sub = [`${KIND_TXT[r.kind] || i.status.name}${KIND_TXT[r.kind] && i.status.name !== KIND_TXT[r.kind] ? ` (${i.status.name})` : ""}`];
+      if (r.kind !== "todo") sub.push(`há ${fmtSpan(r.ageMs)}`);
+      if (r.returns) sub.push(`reaberta ${r.returns}×`);
+      if (i.estimate && i.spent > i.estimate) sub.push("passou da estimativa");
+      const line = issueLine(i, right, `${sub.join(" · ")}${i.parentKey ? ` · ↳ ${i.parentKey}` : ""}`, dm.url);
+      if (r.acting) {
+        line.classList.add("acting");
+        line.querySelector(".m-row-top").prepend(el("span", "acting-tag", "▶ atuando agora"));
+      }
+      if (r.kind === "blocked") line.classList.add("blocked");
+      if (r.kind === "reopen") line.classList.add("late");
+      c.appendChild(line);
+    }
+    if (pend.length > 20) c.appendChild(el("p", "muted xs", `+ ${pend.length - 20}`));
+    box.appendChild(c);
+  }
+
+  /* --- em andamento com outras pessoas (você apontou ou moveu) --- */
+  const others = ["doing", "blocked", "reopen"].flatMap((id) => b.groups[id]).filter((r) => !r.mine && matchPrio(r));
+  if (others.length) {
+    const c = mCard("🤝 Em andamento com outras pessoas", String(others.length));
+    for (const r of others.slice(0, 10)) {
+      const right = el("span", "dm-right");
+      right.append(prioPill(r.issue.priority), el("span", "m-row-r", est(r.issue) || fmtSpan(r.ageMs)));
+      c.appendChild(issueLine(r.issue, right, `${r.issue.status.name}${r.issue.assignee ? ` · ${r.issue.assignee.name}` : ""}`, dm.url));
+    }
+    box.appendChild(c);
+  }
+
+  /* --- 2º: status das suas demandas no período (Feito, Reaberto, Deploy, Validação, Finalizados) --- */
+  const SECTIONS = [["feito"], ["reopen"], ["deploy"], ["qa"], ["shipped"]];
+  let shown = pend.length + others.length;
+  for (const [id] of SECTIONS) {
+    const g = DEMAND_GROUPS.find((x) => x.id === id);
+    const rows = (id === "reopen" ? b.groups.reopen.filter((r) => r.enteredInPeriod) : b.groups[id]).filter(matchPrio);
     if (!rows.length) continue;
     shown += rows.length;
-    const c = mCard(`${g.icon} ${g.label}`, String(rows.length));
-    c.id = `dm-${g.id}`;
-    c.classList.add(`dm-card`, `k-${g.id}`);
+    const c = mCard(`${g.icon} ${label(g)}`, `${rows.length} · ${DV.dmPeriod === "today" ? "entraram hoje" : "no período"}`);
+    if (id !== "reopen") c.id = `dm-${id}`;
+    else c.id = "dm-reopen";
+    c.classList.add("dm-card", `k-${id}`);
     for (const r of rows.slice(0, 15)) {
       const i = r.issue;
-      const age = fmtSpan(r.ageMs);
       let sub;
-      if (g.id === "reopen") sub = `${r.lastReturn ? `voltou ${dayShort(isoOfMs(r.lastReturn))}${r.lastReturnBy ? ` por ${r.lastReturnBy}` : ""}` : "reaberto"}${r.returns > 1 ? ` · ${r.returns}×` : ""} · ${i.status.name}`;
-      else if (g.id === "shipped") sub = `${est(i)}${r.returns ? ` · voltou ${r.returns}×` : " · de primeira"}`;
-      else sub = `${i.status.name} há ${age}${i.assignee && !r.mine ? ` · ${i.assignee.name}` : ""}${i.estimate && i.spent > i.estimate ? " · passou da estimativa" : ""}`;
+      if (id === "reopen") sub = `${r.lastReturn ? `reaberta ${dayShort(isoOfMs(r.lastReturn))}${r.lastReturnBy ? ` por ${r.lastReturnBy}` : ""}` : "reaberta"}${r.returns > 1 ? ` · ${r.returns}ª vez` : ""} · ${i.status.name}`;
+      else if (id === "shipped") sub = `${est(i)}${r.returns ? ` · reaberta ${r.returns}×` : " · de primeira"}`;
+      else sub = `${r.validated ? "✔ validado · " : ""}${i.status.name} desde ${dayShort(isoOfMs(r.since))}${i.assignee && !r.mine ? ` · ${i.assignee.name}` : ""}`;
       if (i.myToday) sub += ` · hoje ${fmtDur(i.myToday)}`;
       const right = el("span", "dm-right");
-      right.append(prioPill(i.priority), el("span", "m-row-r", g.id === "shipped" ? dayShort(isoOfMs(r.since)) : (est(i) || age)));
+      right.append(prioPill(i.priority), el("span", "m-row-r", id === "shipped" || id === "feito" ? dayShort(isoOfMs(r.since)) : (est(i) || fmtSpan(r.ageMs))));
       const line = issueLine(i, right, `${sub}${i.parentKey ? ` · ↳ ${i.parentKey}` : ""}`, dm.url);
-      if (g.id === "reopen") line.classList.add("late");
+      if (id === "reopen") line.classList.add("late");
       c.appendChild(line);
     }
     if (rows.length > 15) c.appendChild(el("p", "muted xs", `+ ${rows.length - 15}`));
     box.appendChild(c);
   }
+  // âncoras dos contadores que não têm seção própria
+  for (const id of ["blocked"]) if (!document.getElementById(`dm-${id}`)) { const a = el("span"); a.id = `dm-${id}`; box.querySelector("#dm-doing")?.before(a); }
+
   if (!shown) {
     const e = el("div", "empty");
-    e.innerHTML = DV.dmPrio ? "<b>🔎</b>Nada com essa prioridade." : `<b>🗂</b>${DV.dmPeriod === "today" ? "Nenhuma das suas demandas se movimentou hoje." : "Nenhuma demanda sua se movimentou neste período."}`;
+    e.innerHTML = DV.dmPrio ? "<b>🔎</b>Nada com essa prioridade." : `<b>🗂</b>${DV.dmPeriod === "today" ? "Nada em seu nome e nenhuma das suas demandas mudou de coluna hoje." : "Nenhuma demanda sua neste período."}`;
     box.appendChild(e);
   }
-  /* --- em seu nome, mas sem movimento no período --- */
-  const idle = b.extra.idle.filter(matchPrio);
-  if (idle.length) {
-    const det = document.createElement("details");
-    det.className = "card dm-idle";
-    det.open = !!DV.showIdle;
-    det.addEventListener("toggle", () => { DV.showIdle = det.open; });
-    const sm = document.createElement("summary");
-    sm.textContent = `Em seu nome, sem movimento ${DV.dmPeriod === "today" ? "hoje" : "no período"} · ${idle.length}`;
-    det.appendChild(sm);
-    for (const r of idle.slice(0, 20)) {
-      const right = el("span", "dm-right");
-      right.append(prioPill(r.issue.priority), el("span", "m-row-r", fmtSpan(r.ageMs)));
-      det.appendChild(issueLine(r.issue, right, `${r.issue.status.name} há ${fmtSpan(r.ageMs)}${r.issue.parentKey ? ` · ↳ ${r.issue.parentKey}` : ""}`, dm.url));
-    }
-    box.appendChild(det);
-  }
+  const parts = [];
+  if (b.worked) parts.push(`você apontou em ${b.worked} demanda(s) ${DV.dmPeriod === "today" ? "hoje" : "no período"}`);
+  if (b.groups.shipped.length) parts.push(`${b.firstPass} de ${b.groups.shipped.length} finalizadas sem reabrir`);
+  if (parts.length) box.appendChild(el("p", "muted xs", `${parts.join(" · ")}.`));
   if (b.extra.prd.length) box.appendChild(el("p", "muted xs", `${b.extra.prd.length} demanda(s) foram para deploy de produção no período (fora dos cartões).`));
   if (dm.truncated) note(box, "warn", "Mais de 300 demandas: mostrando as atualizadas mais recentemente.");
 }
@@ -3622,7 +3922,6 @@ $("dmPeriod").addEventListener("click", (e) => {
   renderDemands();
 });
 $("pgSprint").addEventListener("change", () => { DV.sprintSel = $("pgSprint").value; loadProgress(); });
-$("pgOnlySprint").addEventListener("change", () => { DV.onlySprint = $("pgOnlySprint").checked; savePrefs(); loadProgress(); });
 $("dmRefresh").addEventListener("click", () => loadDemands({ force: true }));
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && state.mode === "today" && DV.date === todayISO() && DV.prog && DV.prefs.autoRefresh) {
@@ -3634,8 +3933,30 @@ document.addEventListener("visibilitychange", () => {
    QuickFill SCRUM — Sprint · Pessoas · Riscos
    ===================================================================== */
 
-const SC = { data: null, seq: 0, unit: "items", sort: "load", q: "", users: new Map(), treeAll: false };
-const STAGE_COLOR = { todo: "var(--surface-3)", doing: "var(--accent)", feito: "#9f8fef", deploy: "#6cc3e0", qa: "var(--warn)", done: "var(--ok)" };
+const SC_PREFS_DEFAULT = { types: true, forecast: true, deploy: true, stages: true, period: true, flow: true, burndown: true, tree: true, velocity: true };
+const SC_PREF_LABELS = [
+  ["types", "HUs · Tarefas · Bugs"], ["forecast", "Previsão no ritmo atual"], ["deploy", "Aviso de Feito / card de deploy"],
+  ["stages", "Onde estão os itens"], ["period", "Resumo do período"], ["flow", "Métricas de fluxo"],
+  ["burndown", "Burndown"], ["tree", "Itens e subtarefas"], ["velocity", "Velocidade das últimas sprints"],
+];
+const SC = { data: null, seq: 0, unit: "items", sort: "load", q: "", users: new Map(), treeAll: false, period: "sprint", prefs: { ...SC_PREFS_DEFAULT },
+  pOpen: new Set(), pStage: new Map(), unOpen: true };
+try { SC.unOpen = localStorage.getItem("qf.unOpen") !== "0"; } catch { /* sem storage */ }
+try {
+  SC.period = localStorage.getItem("qf.scPeriod") || "sprint";
+  SC.prefs = { ...SC_PREFS_DEFAULT, ...JSON.parse(localStorage.getItem("qf.scPrefs") || "{}") };
+  SC.unit = localStorage.getItem("qf.scUnit") || "items";
+} catch { /* sem storage */ }
+const STAGE_COLOR = { todo: "var(--surface-3)", doing: "var(--data)", blocked: "var(--err)", feito: "#9f8fef", deploy: "#6cc3e0", qa: "var(--warn)", validated: "#94d2b4", done: "var(--ok)" };
+const PERIOD_LABEL = { sprint: "na sprint", today: "hoje", 7: "nos últimos 7 dias", 14: "nos últimos 14 dias" };
+
+/** Início do período escolhido (Sprint · Hoje · 7 · 14 dias). */
+function scFrom(sprint) {
+  if (SC.period === "sprint") return sprint?.start ? Date.parse(`${sprint.start}T00:00:00`) : 0;
+  const n = SC.period === "today" ? 1 : Number(SC.period);
+  return Date.parse(`${addDaysIso(todayISO(), -(n - 1))}T00:00:00`);
+}
+const scSettings = () => SC.data?.settings || {};
 const isHighPrio = (p) => ["p1", "p2"].includes(prioTone(p));
 
 /** Sprints ativas dentro do espaço escolhido (Todos · MEED · SUS). */
@@ -3648,10 +3969,16 @@ function scSprints() {
   return out;
 }
 
-const withScrumDefaults = (d) => ({ ...d, settings: { staleDays: 3, wipLimit: 2, feitoThreshold: 3, deploySummary: "Realizando Deploy", deployers: [], ...d.settings } });
+const withScrumDefaults = (d) => {
+  // subtarefas seguem o pai concluído/validado (ver stageOf)
+  for (const sp of d.spaces || []) for (const s of sp.sprints || []) linkParents(s.issues || []);
+  return withScrumSettings(d);
+};
+const withScrumSettings = (d) => ({ ...d, settings: { staleDays: 3, wipLimit: 2, feitoThreshold: 3, deploySummary: "Realizando Deploy", deployers: [], qaPeople: [], smPeople: [], designPeople: [], ignorePeople: [], ...d.settings } });
 const scBoxes = () => ["scSprintBox", "peopleBox", "risksBox"].map($);
 
 async function loadScrum({ force = false } = {}) {
+  force = force || takeFresh("scrum");
   const seq = ++SC.seq;
   if (!SC.data) {
     try {
@@ -3659,6 +3986,7 @@ async function loadScrum({ force = false } = {}) {
       if (scrumData?.spaces && !SC.data) { SC.data = withScrumDefaults(scrumData); renderScrum(); }
     } catch { /* sem cache */ }
   }
+  if (canSkipFetch(SC.data, force)) { renderScrum(); return; }   // voltando de onde parou: usa o que já estava
   for (const id of ["scInfo", "rkInfo"]) $(id).textContent = SC.data ? "atualizando…" : "";
   if (!SC.data) scBoxes().forEach((b) => { b.innerHTML = `<p class="muted xs">Lendo as sprints do Jira…</p>`; });
   try {
@@ -3696,36 +4024,66 @@ const kpiTile = (v, l, sub, tone, tip) => { const t = el("div", `m-kpi ${tone ||
 
 /* ---------- Ajustes da Scrum Master (⋯) ---------- */
 
+/* ---------- Ajustes da Scrum Master (⋯) — tudo aplica na hora ---------- */
+
 function renderScrumSettings() {
   const box = $("scSetBox");
   box.innerHTML = "";
-  const st = SC.data?.settings || { staleDays: 3, wipLimit: 2, feitoThreshold: 3 };
-  box.appendChild(el("b", "xs", "Ajustes da sprint (valem para todos os QuickFill SCRUM desta conta)"));
+  const st = scSettings();
+  const head = el("div", "card-t");
+  head.append(el("b", null, "Ajustes da sprint"), el("span", null, "mudam na hora"));
+  box.appendChild(head);
+
+  box.appendChild(el("div", "m-sub", "Regras (valem para todos os QuickFill SCRUM desta conta)"));
   const fields = [
     ["staleDays", "Dias úteis para considerar “parada”", 1, 30],
     ["wipLimit", "Itens em andamento por pessoa (WIP)", 1, 20],
     ["feitoThreshold", "Cards em Feito para sugerir o deploy", 1, 50],
   ];
-  const inputs = {};
+  let saveTimer = null;
+  const saved = el("span", "muted xs", "");
   for (const [k, label, min, max] of fields) {
     const row = el("label", "cu-goal");
     const inp = el("input", "inp sm num");
     inp.type = "number"; inp.min = min; inp.max = max; inp.value = st[k];
-    inputs[k] = inp;
+    inp.addEventListener("input", () => {
+      const v = Math.min(max, Math.max(min, Math.round(Number(inp.value) || 0)));
+      if (!Number(inp.value)) return;
+      SC.data.settings[k] = v;            // aplica já na tela
+      renderScrum();
+      saved.textContent = "salvando…";
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(async () => {
+        try { await send("SAVE_SCRUM_SETTINGS", { [k]: v }); saved.textContent = "✓ salvo"; chrome.storage.local.set({ scrumData: SC.data }).catch(() => {}); }
+        catch (e) { saved.textContent = ""; toast(e.message); }
+      }, 500);
+    });
     row.append(el("span", null, label), inp);
     box.appendChild(row);
   }
+  box.appendChild(saved);
+
+  box.appendChild(el("div", "m-sub", "O que aparece na aba Sprint (só neste navegador)"));
+  const list = el("div", "cu-list");
+  for (const [k, label] of SC_PREF_LABELS) {
+    const l = el("label", "cu-item");
+    const cb = el("input"); cb.type = "checkbox"; cb.checked = !!SC.prefs[k];
+    cb.addEventListener("change", () => {
+      SC.prefs[k] = cb.checked;
+      try { localStorage.setItem("qf.scPrefs", JSON.stringify(SC.prefs)); } catch { /* sem storage */ }
+      renderSprint();
+    });
+    l.append(cb, el("span", null, label));
+    list.appendChild(l);
+  }
+  box.appendChild(list);
+  const qa = (st.qaPeople || []).map((p) => p.name).join(", ");
+  const des = (st.designPeople || []).map((p) => p.name).join(", ");
+  box.appendChild(el("p", "muted xs", `Fora das regras de WIP e de atribuição — QA: ${qa || "ninguém"} · Design: ${des || "ninguém"}. Ajuste nas Opções › Equipe.`));
   const bar = el("div", "row-end");
-  const save = el("button", "btn sm primary", "Salvar");
-  save.addEventListener("click", async () => {
-    try {
-      await send("SAVE_SCRUM_SETTINGS", Object.fromEntries(Object.entries(inputs).map(([k, i]) => [k, i.value])));
-      toast("Ajustes salvos.", "ok");
-      box.classList.add("hidden"); $("scSettings").classList.remove("on");
-      loadScrum({ force: true });
-    } catch (e) { toast(e.message); }
-  });
-  bar.appendChild(save);
+  const reset = el("button", "btn sm", "Mostrar tudo");
+  reset.addEventListener("click", () => { SC.prefs = { ...SC_PREFS_DEFAULT }; try { localStorage.setItem("qf.scPrefs", JSON.stringify(SC.prefs)); } catch { /* sem storage */ } renderScrumSettings(); renderSprint(); });
+  bar.appendChild(reset);
   box.appendChild(bar);
 }
 
@@ -3763,24 +4121,29 @@ function burnChart(h, unit) {
   return svg;
 }
 
-function stageBar(byStage, total) {
-  const bar = el("div", "stackbar tall");
+function stageBar(byStage, total, onPick = null, picked = "") {
+  const bar = el("div", `stackbar tall${onPick ? " pickable" : ""}`);
   for (const s of STAGES) {
     const n = byStage[s.id].length;
     if (!n) continue;
-    const sg = el("i", null, n >= 2 ? String(n) : "");
+    const sg = el("i", picked === s.id ? "on" : "", n >= 2 ? String(n) : "");
     sg.style.flex = String(n / Math.max(1, total));
     sg.style.background = STAGE_COLOR[s.id];
     if (s.id === "todo") sg.style.color = "var(--txt)";
-    if (s.id === "qa" || s.id === "deploy") sg.style.color = "#1d2125";
-    sg.dataset.tip = `${s.label}: ${n}`;
+    if (s.id === "qa" || s.id === "deploy" || s.id === "validated") sg.style.color = "#1d2125";
+    sg.dataset.tip = `${s.label}: ${n}${onPick ? " · clique para listar" : ""}`;
+    // dentro de <summary> o clique abriria/fecharia o cartão: a barra trata o clique sozinha
+    if (onPick) sg.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); onPick(s.id); });
     bar.appendChild(sg);
   }
   return bar;
 }
 
 const stageLabel = (i) => STAGES.find((s) => s.id === stageOf(i))?.label || i.status.name;
-const typeTag = (i) => { const g = typeGroup(i.type); const t = el("span", `tt tt-${g}`, g === "hu" ? "HU" : g === "bug" ? "Bug" : "Tarefa"); t.dataset.tip = i.type; return t; };
+const typeTag = (i) => {
+  if (i.isSubtask) { const t = el("span", "tt tt-sub", "Sub"); t.dataset.tip = i.type || "Subtarefa"; return t; }
+  const g = typeGroup(i.type); const t = el("span", `tt tt-${g}`, g === "hu" ? "HU" : g === "bug" ? "Bug" : "Tarefa"); t.dataset.tip = i.type; return t;
+};
 
 function renderSprint() {
   const box = $("scSprintBox");
@@ -3791,9 +4154,32 @@ function renderSprint() {
   const canPts = SC.data.fields.points;
   document.querySelector('#scUnit [data-unit="points"]').disabled = !canPts;
   const unit = canPts ? SC.unit : "items";
+  const P = SC.prefs;
+
+  /* --- busca: HUs, tarefas, bugs e subtarefas da(s) sprint(s) --- */
+  const q = normName(SC.search || "");
+  if (q.length >= 2) {
+    const all = list.flatMap(({ space: sp, sprint: s }) => s.issues.map((i) => ({ i, sp })));
+    const hits = all.filter(({ i }) => [i.key, i.summary, i.assignee?.name, i.parentKey, i.parentSummary, i.status.name, i.type]
+      .some((v) => normName(v).includes(q)));
+    const c = mCard(`🔎 “${SC.search.trim()}”`, `${hits.length} resultado(s)`);
+    c.classList.add("search-card");
+    for (const { i, sp } of hits.slice(0, 40)) {
+      const right = el("span", "dm-right");
+      right.append(typeTag(i), prioPill(i.priority), el("span", "m-row-r", stageLabel(i)));
+      const sub = [i.status.name, i.assignee ? i.assignee.name : "sem responsável"];
+      if (i.isSubtask) sub.push(`subtarefa de ${i.parentKey}${i.parentSummary ? ` · ${i.parentSummary}` : ""}`);
+      if (list.length > 1) sub.push(sp.project);
+      c.appendChild(issueLine(i, right, sub.join(" · "), SC.data.url));
+    }
+    if (!hits.length) c.appendChild(el("p", "muted xs", "Nada na sprint com esse texto."));
+    if (hits.length > 40) c.appendChild(el("p", "muted xs", `+ ${hits.length - 40} — refine a busca.`));
+    box.appendChild(c);
+  }
 
   for (const { space: sp, sprint: s } of list) {
     const h = sprintHealth(s, today);
+    const fromMs = scFrom(s);
     const card = el("div", "card pg-sprint");
     const top = el("div", "pg-sprint-top");
     top.append(el("span", "sp-space", sp.project), el("b", null, s.name),
@@ -3802,17 +4188,19 @@ function renderSprint() {
     card.appendChild(el("div", "muted xs", `${s.start ? brShort(s.start) : "?"} → ${s.end ? brShort(s.end) : "?"} · dia ${h.elapsed} de ${h.days.length} úteis`));
     if (s.goal) card.appendChild(el("div", "sc-goal", `🎯 ${s.goal}`));
 
-    /* HUs · Tarefas · Bugs */
-    const types = el("div", "chips-row");
-    for (const g of ["hu", "task", "bug"]) {
-      const all = h.items.filter((i) => typeGroup(i.type) === g);
-      if (!all.length) continue;
-      const done = all.filter((i) => stageOf(i) === "done").length;
-      types.appendChild(chip(`${TYPE_LABEL[g]} ${done}/${all.length}`, done === all.length ? "ok" : "", `${done} de ${all.length} ${TYPE_LABEL[g].toLowerCase()} concluídas`));
+    if (P.types) {
+      const types = el("div", "chips-row");
+      for (const g of ["hu", "task", "bug"]) {
+        const all = h.items.filter((i) => typeGroup(i.type) === g);
+        if (!all.length) continue;
+        const done = all.filter((i) => stageOf(i) === "done").length;
+        types.appendChild(chip(`${TYPE_LABEL[g]} ${done}/${all.length}`, done === all.length ? "ok" : "", `${done} de ${all.length} ${TYPE_LABEL[g].toLowerCase()} concluídas`));
+      }
+      const subs = s.issues.filter((i) => i.isSubtask);
+      if (subs.length) types.appendChild(chip(`Subtarefas ${subs.filter((i) => stageOf(i) === "done").length}/${subs.length}`, "", "Subtarefas das demandas da sprint (não entram na contagem da sprint)"));
+      if (h.byStage.blocked.length) types.appendChild(chip(`⛔ ${h.byStage.blocked.length} impedida(s)`, "warn", "Em Impedido / Aguardando"));
+      card.appendChild(types);
     }
-    const subs = s.issues.filter((i) => i.isSubtask);
-    if (subs.length) types.appendChild(chip(`Subtarefas ${subs.filter((i) => stageOf(i) === "done").length}/${subs.length}`, "", "Subtarefas das demandas da sprint (não entram na contagem da sprint)"));
-    card.appendChild(types);
 
     const bars = el("div", "sc-bars");
     const line = (label, value, tone, tip) => {
@@ -3832,44 +4220,116 @@ function renderSprint() {
     if (canPts && h.totalPts) bars.append(line("Pontos", h.donePts / h.totalPts, h.donePts / h.totalPts + 0.1 < h.timePct ? "warn" : "ok", `${h.donePts} de ${h.totalPts} pontos concluídos`));
     card.appendChild(bars);
 
-    const fc = el("div", `dv-pace ${h.onTrack ? "up" : "down"}`);
-    fc.append(el("b", null, h.onTrack ? "▲" : "▼"), el("span", null, h.onTrack
-      ? `No ritmo atual a sprint fecha completa (${h.done} concluídas, ~${(h.elapsed ? h.done / h.elapsed : 0).toFixed(1).replace(".", ",")} por dia útil).`
-      : `No ritmo atual devem sair ~${h.forecast} de ${h.total} até o fim. Faltam ${h.total - h.done} em ${h.left} dia(s) útil(eis).`));
-    card.appendChild(fc);
+    if (P.forecast) {
+      const fc = el("div", `dv-pace ${h.onTrack ? "up" : "down"}`);
+      fc.append(el("b", null, h.onTrack ? "▲" : "▼"), el("span", null, h.onTrack
+        ? `No ritmo atual a sprint fecha completa (${h.done} concluídas, ~${(h.elapsed ? h.done / h.elapsed : 0).toFixed(1).replace(".", ",")} por dia útil).`
+        : `No ritmo atual devem sair ~${h.forecast} de ${h.total} até o fim. Faltam ${h.total - h.done} em ${h.left} dia(s) útil(eis).`));
+      card.appendChild(fc);
+    }
     box.appendChild(card);
 
     /* --- Feito acumulado → card de deploy --- */
     const feito = s.issues.filter((i) => stageOf(i) === "feito");
-    if (feito.length) {
-      const over = feito.length >= SC.data.settings.feitoThreshold;
+    if (P.deploy && feito.length) {
+      const over = feito.length >= scSettings().feitoThreshold;
       const w = el("div", `dv-pace ${over ? "down" : "up"} sc-deploy`);
-      const txt = el("span", null, `${feito.length} card(s) em Feito esperando deploy${over ? ` — passou do limite de ${SC.data.settings.feitoThreshold}` : ""}.`);
+      const txt = el("span", null, `${feito.length} card(s) em Feito/PR esperando deploy${over ? ` — passou do limite de ${scSettings().feitoThreshold}` : ""}.`);
       const b = el("button", `btn sm ${over ? "primary" : ""}`, "Criar card “Realizando Deploy”");
       b.addEventListener("click", () => openDeployForm(sp, s, feito));
       w.append(el("b", null, "☑"), txt, b);
       box.appendChild(w);
     }
 
-    /* --- etapas --- */
-    const st = mCard("Onde estão os itens", `${h.total} itens`);
-    st.appendChild(stageBar(h.byStage, h.total));
-    st.appendChild(legend(STAGES.map((x) => [STAGE_COLOR[x.id], `${x.label} ${h.byStage[x.id].length}`])));
-    if (h.added.length) st.appendChild(el("p", "muted xs", `➕ ${h.added.length} entraram depois do início da sprint.`));
-    box.appendChild(st);
+    /* --- etapas (com Impedido / Aguardando e Validado) --- */
+    if (P.stages) {
+      const st = mCard("Onde estão os itens", `${h.total} itens · clique numa etapa`);
+      const picked = SC.stageSel?.sprint === s.id ? SC.stageSel.stage : "";
+      const pick = (id) => { SC.stageSel = picked === id ? null : { sprint: s.id, stage: id }; renderSprint(); };
+      st.appendChild(stageBar(h.byStage, h.total, pick, picked));
+      const lg = el("div", "legend pick-legend");
+      for (const x of STAGES.filter((y) => h.byStage[y.id].length || ["todo", "doing", "done"].includes(y.id))) {
+        const b = el("button", picked === x.id ? "on" : "");
+        const dot = el("i"); dot.style.background = STAGE_COLOR[x.id];
+        b.append(dot, document.createTextNode(`${x.label} ${h.byStage[x.id].length}`));
+        b.disabled = !h.byStage[x.id].length;
+        b.addEventListener("click", () => pick(x.id));
+        lg.appendChild(b);
+      }
+      st.appendChild(lg);
+      if (h.added.length) st.appendChild(el("p", "muted xs", `➕ ${h.added.length} entraram depois do início da sprint.`));
+      /* lista da etapa escolhida */
+      if (picked) {
+        const g = STAGES.find((y) => y.id === picked);
+        const rows = h.byStage[picked].slice().sort((a, b) => (a.priority?.rank ?? 99) - (b.priority?.rank ?? 99) || (lastMove(a) || 0) - (lastMove(b) || 0));
+        const lst = el("div", "stage-list");
+        const head = el("div", "stage-list-h");
+        head.append(el("b", null, `${g.icon} ${g.label} · ${rows.length}`));
+        const x = el("button", "link", "fechar"); x.addEventListener("click", () => pick(picked));
+        head.appendChild(x);
+        lst.appendChild(head);
+        const subsOf = (k) => s.issues.filter((i) => i.isSubtask && i.parentKey === k);
+        for (const i of rows) {
+          const age = businessAge(lastMove(i));
+          const subs = subsOf(i.key);
+          const right = el("span", "dm-right");
+          right.append(typeTag(i), prioPill(i.priority), el("span", "m-row-r", age ? `${age}d` : "hoje"));
+          const sub = [`${i.status.name}`, i.assignee ? i.assignee.name : "sem responsável"];
+          if (subs.length) sub.push(`${subs.filter((y) => stageOf(y) === "done").length}/${subs.length} subtarefas`);
+          lst.appendChild(issueLine(i, right, sub.join(" · "), SC.data.url));
+        }
+        st.appendChild(lst);
+      }
+      box.appendChild(st);
+    }
 
-    /* --- burndown --- */
-    const bc = mCard(`Burndown · ${unit === "points" ? "pontos" : "itens"}`, "tracejado = ideal");
-    bc.appendChild(burnChart(h, unit));
-    bc.appendChild(legend([["var(--accent)", "restante"], ["var(--faint)", "ideal"]]));
-    box.appendChild(bc);
+    /* --- resumo do período --- */
+    if (P.period && SC.period !== "sprint") {
+      const moves = s.issues.flatMap((i) => (i.transitions || []).filter((t) => t.at >= fromMs));
+      const doneP = h.items.filter((i) => stageOf(i) === "done" && (i.catChanged || 0) >= fromMs).length;
+      const reopenP = s.issues.reduce((n, i) => n + reopenEvents(i, fromMs).length, 0);
+      const toQa = moves.filter((t) => t.toStage === "qa").length;
+      const createdP = s.issues.filter((i) => (i.created || 0) >= fromMs).length;
+      const pc = mCard(`Resumo ${PERIOD_LABEL[SC.period]}`, `${moves.length} movimentação(ões)`);
+      pc.classList.add("half");
+      const k = el("div", "m-kpis four");
+      k.append(kpiTile(String(doneP), "concluídas"), kpiTile(String(toQa), "foram para validação"),
+        kpiTile(String(reopenP), "reaberturas", "", reopenP ? "warn" : "ok"), kpiTile(String(createdP), "criadas"));
+      pc.appendChild(k);
+      box.appendChild(pc);
+    }
 
-    /* --- itens e subtarefas --- */
-    box.appendChild(treeCard(s));
+    /* --- métricas de fluxo --- */
+    if (P.flow) {
+      const f = flowMetrics(s, { today, fromMs: SC.period === "sprint" ? 0 : fromMs });
+      const fc = mCard("Métricas de fluxo", "HUs, tarefas e bugs");
+      fc.classList.add("half");
+      const k = el("div", "m-kpis four");
+      k.append(
+        kpiTile(f.cycleAvg ? fmtSpan(f.cycleAvg) : "—", "cycle time", "1º andamento → concluído", "", "Tempo médio entre começar e concluir"),
+        kpiTile(f.qaWaitAvg ? fmtSpan(f.qaWaitAvg) : "—", "na validação", "tempo médio por item", f.qaWaitAvg > 2 * 864e5 ? "warn" : "", "Tempo médio que um item fica na coluna Validação"),
+        kpiTile(pct(f.reopenRate), "reabertas", `${f.reopened} item(ns)`, f.reopenRate > 0.2 ? "warn" : "", "Itens que entraram em Reaberto ao menos uma vez"),
+        kpiTile(f.firstPassRate == null ? "—" : pct(f.firstPassRate), "aprovadas de 1ª", "passaram pelo QA sem reabrir", f.firstPassRate != null && f.firstPassRate >= 0.8 ? "ok" : ""),
+      );
+      fc.appendChild(k);
+      const bits = [`vazão: ${f.throughput.toFixed(1).replace(".", ",")} concluída(s) por dia útil ${PERIOD_LABEL[SC.period]}`, `${f.wipNow} em andamento agora`];
+      if (f.blockedNow) bits.push(`${f.blockedNow} impedida(s)${f.blockedAvg ? ` · tempo médio impedido ${fmtSpan(f.blockedAvg)}` : ""}`);
+      fc.appendChild(el("p", "muted xs", `${bits.join(" · ")}.`));
+      box.appendChild(fc);
+    }
 
-    /* --- velocidade --- */
-    if (sp.velocity?.length) {
+    if (P.burndown) {
+      const bc = mCard(`Burndown · ${unit === "points" ? "pontos" : "itens"}`, "tracejado = ideal");
+      bc.appendChild(burnChart(h, unit));
+      bc.appendChild(legend([["var(--data)", "restante"], ["var(--faint)", "ideal"]]));
+      box.appendChild(bc);
+    }
+
+    if (P.tree) box.appendChild(treeCard(s));
+
+    if (P.velocity && sp.velocity?.length) {
       const vc = mCard("Velocidade das últimas sprints", unit === "points" ? "pontos" : "itens");
+      vc.classList.add("half");
       const vals = sp.velocity.map((v) => (unit === "points" ? { done: v.pointsDone, total: v.points } : { done: v.done, total: v.total }));
       const max = Math.max(1, ...vals.map((v) => v.total), unit === "points" ? h.totalPts : h.total);
       const rowsBox = el("div", "sc-vel");
@@ -3884,10 +4344,10 @@ function renderSprint() {
         rowsBox.appendChild(r);
       });
       vc.appendChild(rowsBox);
-      const avg = vals.reduce((sum, v) => sum + v.done, 0) / vals.length;
+      const avgV = vals.reduce((sum, v) => sum + v.done, 0) / vals.length;
       const now = unit === "points" ? h.totalPts : h.total;
-      vc.appendChild(el("p", `muted xs ${now > avg * 1.15 ? "sc-alert" : ""}`,
-        `Média entregue: ${Math.round(avg)} · compromisso desta sprint: ${now}${now > avg * 1.15 ? " — acima do que o time costuma entregar" : ""}.`));
+      vc.appendChild(el("p", `muted xs ${now > avgV * 1.15 ? "sc-alert" : ""}`,
+        `Média entregue: ${Math.round(avgV)} · compromisso desta sprint: ${now}${now > avgV * 1.15 ? " — acima do que o time costuma entregar" : ""}.`));
       box.appendChild(vc);
     }
     if (s.truncated) note(box, "warn", "Sprint com mais de 400 itens: os números consideram os 400 primeiros.");
@@ -3954,6 +4414,7 @@ async function usersFor(project) {
 }
 
 /** Botão "Atribuir" → escolhe a pessoa (sugestão pré-selecionada) → confirma. */
+/** Botão "Atribuir" → escolhe a pessoa (sugestão pré-selecionada) → confirma. */
 function assignControl(issue, suggested) {
   const wrap = el("span", "assign");
   const btn = el("button", "btn sm", suggested ? `Atribuir a ${suggested.name.split(" ")[0]}` : "Atribuir");
@@ -3967,14 +4428,23 @@ function assignControl(issue, suggested) {
     no.title = "Cancelar";
     wrap.append(sel, ok, no);
     no.addEventListener("click", (ev) => { ev.stopPropagation(); wrap.replaceWith(assignControl(issue, suggested)); });
-    const team = peopleLoad(scSprints().flatMap((x) => x.sprint.issues), SC.data.settings).people;
+    const load = peopleLoad(scSprints().flatMap((x) => x.sprint.issues), scSettings());
     const all = await usersFor(issue.project);
+    const isQa = qaMatcher(scSettings().qaPeople || []);
     sel.innerHTML = "";
-    const g1 = document.createElement("optgroup"); g1.label = "Na sprint";
-    for (const p of team) g1.appendChild(new Option(`${p.name} · WIP ${p.wip}`, p.id));
+    const g1 = document.createElement("optgroup"); g1.label = "Desenvolvimento (na sprint)";
+    for (const p of load.devs) g1.appendChild(new Option(`${p.name} · WIP ${p.wip}`, p.id));
     const g2 = document.createElement("optgroup"); g2.label = "Outras pessoas do projeto";
-    for (const u of all) if (!team.some((p) => p.id === u.accountId)) g2.appendChild(new Option(u.name, u.accountId));
-    sel.append(g1, g2);
+    const g3 = document.createElement("optgroup"); g3.label = "QA";
+    for (const p of load.qa) g3.appendChild(new Option(p.name, p.id));
+    const g4 = document.createElement("optgroup"); g4.label = "Design UI/UX";
+    for (const p of load.design) g4.appendChild(new Option(p.name, p.id));
+    const isDesign = qaMatcher(scSettings().designPeople || []);
+    for (const u of all) {
+      if (load.people.some((p) => p.id === u.accountId)) continue;
+      (isDesign(u.accountId, u.name) ? g4 : isQa(u.accountId, u.name) ? g3 : g2).appendChild(new Option(u.name, u.accountId));
+    }
+    for (const g of [g1, g2, g4, g3]) if (g.children.length) sel.appendChild(g);
     if (suggested) sel.value = suggested.id;
     ok.addEventListener("click", async (ev) => {
       ev.stopPropagation();
@@ -3992,22 +4462,50 @@ function assignControl(issue, suggested) {
   return wrap;
 }
 
+/**
+ * Linha "aberta" de demanda: título inteiro (quebra linha), resumo da descrição
+ * e as ações numa linha própria — para decidir sem precisar abrir o Jira.
+ */
+function taskRow(i, { meta = "", actions = [] } = {}) {
+  const r = el("div", "tr-row");
+  const head = el("div", "tr-head");
+  head.append(el("span", "k", i.key), typeTag(i), el("b", "tr-title", i.summary || "(sem título)"));
+  r.appendChild(head);
+  if (i.desc) {
+    const d = el("p", "tr-desc", i.desc);
+    d.title = "Clique para ver mais / menos";
+    d.addEventListener("click", () => d.classList.toggle("open"));
+    r.appendChild(d);
+  } else {
+    r.appendChild(el("p", "tr-desc empty", "Sem descrição na demanda."));
+  }
+  const foot = el("div", "tr-foot");
+  foot.append(el("span", "tr-meta", meta));
+  const act = el("span", "tr-actions");
+  act.append(...actions, jiraLink(i.key, { base: SC.data?.url, label: "" }));
+  foot.appendChild(act);
+  r.appendChild(foot);
+  return r;
+}
+
 /* ---------- Card "Realizando Deploy" ---------- */
 
-async function openDeployForm(sp, sprint, feito) {
+async function openDeployForm(sp, sprint, feito, draft = null) {
   if (state.mode !== "sprint") setMode("sprint");
   const box = $("scDeploy");
   box.innerHTML = "";
   box.classList.remove("hidden");
-  const c = mCard(`☑ Card de deploy · ${sp.project}`, `${feito.length} em Feito`);
+  const labels = { batch: DEF.spaces?.batch?.label, sustentacao: DEF.spaces?.sustentacao?.label };
+  const col = feitoLabel(sp.project, labels), env = deployLabel(sp.project, labels).replace("Deploy ", "");
+  const c = mCard(`☑ Card de deploy · ${sp.project}`, `${feito.length} em ${col}`);
   c.classList.add("deploy-form");
   const title = el("input", "inp");
-  title.value = SC.data.settings.deploySummary || "Realizando Deploy";
+  title.value = draft?.title ?? (SC.data.settings.deploySummary || "Realizando Deploy");
   const who = el("select", "inp");
   who.appendChild(new Option("Carregando pessoas…", ""));
   const desc = el("textarea", "inp ta");
   desc.rows = 3;
-  desc.value = `Deploy em HMP dos cards que estão em Feito na ${sprint.name}.`;
+  desc.value = draft?.desc ?? `Deploy em ${env} dos cards que estão em ${col} na ${sprint.name}.`;
   const field = (label, input) => { const l = el("label", "field"); l.append(el("span", null, label), input); return l; };
   c.append(field("Título", title), field("Quem vai realizar o deploy", who), field("Descrição", desc));
 
@@ -4015,15 +4513,15 @@ async function openDeployForm(sp, sprint, feito) {
   const checks = [];
   for (const i of feito) {
     const row = el("label", "chk");
-    const cb = el("input"); cb.type = "checkbox"; cb.checked = true; cb.value = i.key;
+    const cb = el("input"); cb.type = "checkbox"; cb.checked = !(draft?.unchecked || []).includes(i.key); cb.value = i.key;
     checks.push(cb);
     row.append(cb, el("span", null, `${i.key} — ${i.summary}${i.assignee ? ` (${i.assignee.name.split(" ")[0]})` : ""}`));
     list.appendChild(row);
   }
   c.append(el("div", "m-sub", "Cards incluídos"), list);
   const opt = (label, on) => { const l = el("label", "tgl"); const cb = el("input"); cb.type = "checkbox"; cb.checked = on; l.append(cb, el("span", null, label)); return [l, cb]; };
-  const [lLink, cLink] = opt("Vincular os cards", true);
-  const [lSprint, cSprint] = opt("Colocar na sprint ativa", true);
+  const [lLink, cLink] = opt("Vincular os cards", draft?.link ?? true);
+  const [lSprint, cSprint] = opt("Colocar na sprint ativa", draft?.sprint ?? true);
   const tg = el("div", "toggles"); tg.append(lLink, lSprint);
   c.appendChild(tg);
   const bar = el("div", "row-end");
@@ -4032,8 +4530,17 @@ async function openDeployForm(sp, sprint, feito) {
   bar.append(cancel, go);
   c.appendChild(bar);
   box.appendChild(c);
-  box.scrollIntoView({ behavior: "smooth", block: "start" });
-  cancel.addEventListener("click", () => { box.classList.add("hidden"); box.innerHTML = ""; });
+  if (!draft) box.scrollIntoView({ behavior: "smooth", block: "start" });
+  // Rascunho do formulário: volta preenchido se você sair da extensão no meio
+  const track = () => {
+    SC.deployDraft = { project: sp.project, sprintId: sprint.id, title: title.value, desc: desc.value, who: who.value,
+      unchecked: checks.filter((x) => !x.checked).map((x) => x.value), link: cLink.checked, sprint: cSprint.checked };
+    saveViewSoon();
+  };
+  c.addEventListener("input", track);
+  c.addEventListener("change", track);
+  track();
+  cancel.addEventListener("click", () => { box.classList.add("hidden"); box.innerHTML = ""; SC.deployDraft = null; saveViewSoon(); });
 
   const deployers = SC.data.settings.deployers || [];
   const all = await usersFor(sp.project);
@@ -4048,6 +4555,8 @@ async function openDeployForm(sp, sprint, feito) {
   for (const u of all) if (!deployers.some((d) => d.accountId === u.accountId)) g2.appendChild(new Option(u.name, u.accountId));
   who.appendChild(g2);
   if (deployers.length === 1) who.value = deployers[0].accountId;
+  if (draft?.who) who.value = draft.who;
+  track();
 
   go.addEventListener("click", async () => {
     const keys = checks.filter((x) => x.checked).map((x) => x.value);
@@ -4060,6 +4569,8 @@ async function openDeployForm(sp, sprint, feito) {
         keys, items: feito.map((i) => ({ key: i.key, summary: i.summary })), link: cLink.checked, sprintId: cSprint.checked ? sprint.id : null,
       });
       box.innerHTML = "";
+      SC.deployDraft = null;
+      saveViewSoon();
       const done = mCard(`✓ ${res.key} criado`, "");
       for (const s of res.steps) done.appendChild(el("div", `wd-note ${s.ok ? "info" : "err"}`, `${s.ok ? "✓" : "✕"} ${s.step}${s.detail ? ` — ${s.detail}` : ""}`));
       done.appendChild(issueLine({ key: res.key, summary: title.value.trim() }, null, "abrir no Jira", SC.data.url));
@@ -4078,40 +4589,49 @@ function renderPeople() {
   const list = scSprints();
   if (!list.length) return scEmpty(box);
   const issues = list.flatMap((x) => x.sprint.issues);
-  const { people, unassigned } = peopleLoad(issues, SC.data.settings);
+  const fromMs = SC.period === "sprint" ? 0 : scFrom(null);
+  const filtered = SC.period !== "sprint";
+  const { people, devs, qa, sm, design, unassigned } = peopleLoad(issues, { ...scSettings(), fromMs });
+  const byKey = new Map(issues.map((i) => [i.key, i]));
   const q = SC.q.trim().toLowerCase();
-  const shown = people.filter((p) => !q || p.name.toLowerCase().includes(q))
-    .sort(SC.sort === "name" ? (a, b) => a.name.localeCompare(b.name) : SC.sort === "wip" ? (a, b) => b.wip - a.wip || b.open - a.open : () => 0);
+  const sortFn = SC.sort === "name" ? (a, b) => a.name.localeCompare(b.name) : SC.sort === "wip" ? (a, b) => b.wip - a.wip || b.open - a.open : () => 0;
+  const match = (p) => (!q || p.name.toLowerCase().includes(q)) && (!filtered || p.active.size || p.moves);
 
   const k = el("div", "m-kpis four");
-  const wipTot = people.reduce((s, p) => s + p.wip, 0);
-  const over = people.filter((p) => p.overWip).length;
-  const free = people.filter((p) => p.free).length;
+  const wipTot = devs.reduce((s, p) => s + p.wip, 0);
+  const over = devs.filter((p) => p.overWip).length;
+  const free = devs.filter((p) => p.free).length;
   k.append(
-    kpiTile(String(people.length), "pessoas", "na sprint"),
-    kpiTile(String(wipTot), "em andamento", `limite ${SC.data.settings.wipLimit}/pessoa`),
-    kpiTile(String(over), "acima do WIP", over ? "foco em terminar" : "tudo ok", over ? "warn" : "ok", "Pessoas com mais itens em andamento que o limite"),
-    kpiTile(String(unassigned.length), "sem responsável", free ? `${free} pessoa(s) livre(s)` : "", unassigned.length ? "warn" : "ok"),
+    kpiTile(String(devs.length), "desenvolvedores", [qa.length && `+ ${qa.length} QA`, design.length && `${design.length} Design`].filter(Boolean).join(" · ") || "na sprint"),
+    kpiTile(String(wipTot), "em andamento", `limite ${scSettings().wipLimit}/pessoa`),
+    kpiTile(String(over), "acima do WIP", over ? "foco em terminar" : "tudo ok", over ? "warn" : "ok", "Desenvolvedores com mais itens em andamento que o limite"),
+    kpiTile(String(unassigned.length), "sem responsável", free ? `${free} dev(s) livre(s)` : "", unassigned.length ? "warn" : "ok"),
   );
   box.appendChild(k);
+  if (filtered) box.appendChild(el("p", "muted xs", `Mostrando quem teve movimento ${PERIOD_LABEL[SC.period]} e só os itens que se moveram no período.`));
 
-  /* --- sem responsável: sugestão + Atribuir --- */
+  /* --- sem responsável: sugestão (só desenvolvedores) + Atribuir --- */
   if (unassigned.length) {
-    const c = mCard("👤 Sem responsável", "sugestão de quem pode pegar");
+    const c = mCard("👤 Sem responsável", `${unassigned.length} · sugestão entre os desenvolvedores`);
+    {   // recolher/expandir: seta padrão de todos os cards (ver enhanceCards)
     for (const u of unassigned.slice(0, 15)) {
-      const sug = u.suggestion ? `sugestão: ${u.suggestion.person.name} — ${u.suggestion.why}` : "ninguém com folga no momento";
-      const right = el("span", "dm-right");
-      right.append(prioPill(u.issue.priority), assignControl(u.issue, u.suggestion?.person));
-      c.appendChild(issueLine(u.issue, right, `${stageLabel(u.issue)} · ${sug}${u.issue.parentKey ? ` · ↳ ${u.issue.parentKey}` : ""}`, SC.data.url));
+      const sug = u.suggestion ? `sugestão: ${u.suggestion.person.name} — ${u.suggestion.why}` : "nenhum dev com folga no momento";
+      c.appendChild(taskRow(u.issue, {
+        meta: `${stageLabel(u.issue)} · ${sug}${u.issue.parentKey ? ` · ↳ ${u.issue.parentKey}` : ""}`,
+        actions: [prioPill(u.issue.priority), assignControl(u.issue, u.suggestion?.person)],
+      }));
     }
     if (unassigned.length > 15) c.appendChild(el("p", "muted xs", `+ ${unassigned.length - 15}`));
     box.appendChild(c);
+    }
   }
 
-  /* --- uma linha por pessoa --- */
-  for (const p of shown) {
+  const personCardSc = (p) => {
     const det = document.createElement("details");
     det.className = `card pp-card ${p.overWip ? "over" : ""}`;
+    det.open = SC.pOpen.has(p.id);
+    det.addEventListener("toggle", () => { if (det.open) SC.pOpen.add(p.id); else { SC.pOpen.delete(p.id); SC.pStage.delete(p.id); } });
+    const picked = SC.pStage.get(p.id) || "";
     const sm = document.createElement("summary");
     const av = el("span", "dv-av", initials(p.name));
     av.style.background = avatarColor(p.id);
@@ -4119,40 +4639,90 @@ function renderPeople() {
     const name = el("div", "pp-name");
     name.append(el("b", null, p.name));
     if (p.id === SC.data.me.accountId) name.append(el("span", "chip", "você"));
-    if (p.overWip) name.append(chip(`WIP ${p.wip}`, "warn", `Mais de ${SC.data.settings.wipLimit} itens em andamento ao mesmo tempo`));
+    if (p.isQa) name.append(chip("QA", "", "Equipe de QA — fora das regras de WIP e de atribuição"));
+    if (p.isSm) name.append(chip("Scrum Master", "hot", "Liderança — Opções › Equipe"));
+    if (p.isDesign) name.append(chip("Design UI", "design", "Design UI/UX — fora das sugestões de implementação e das regras de WIP"));
+    if (p.overWip) name.append(chip(`WIP ${p.wip}`, "warn", `Mais de ${scSettings().wipLimit} itens em andamento ao mesmo tempo`));
     if (p.free) name.append(chip("livre", "ok", "Nenhum item aberto na sprint — pode receber demanda"));
     main.appendChild(name);
     const total = STAGES.reduce((n, s) => n + p.stages[s.id].length, 0);
-    main.appendChild(stageBar(p.stages, total));
+    // Clique numa etapa da barra: abre o cartão só com as demandas dessa etapa
+    if (total) main.appendChild(stageBar(p.stages, total, (id) => {
+      if (picked === id) SC.pStage.delete(p.id); else { SC.pStage.set(p.id, id); SC.pOpen.add(p.id); }
+      const y = $("scroll").scrollTop; renderPeople(); $("scroll").scrollTop = y;
+    }, picked));
     const bits = [];
+    if (filtered || p.isSm) bits.push(`${p.moves} movimentação(ões) ${PERIOD_LABEL[SC.period]}`);
+    if (filtered && p.doneInPeriod) bits.push(`✓ ${p.doneInPeriod} concluída(s) no período`);
     if (p.wip) bits.push(`◐ ${p.wip} em andamento${p.oldest ? ` (mais antigo há ${p.oldest}d)` : ""}`);
+    if (p.stages.blocked.length) bits.push(`⛔ ${p.stages.blocked.length} impedida(s)`);
     if (p.stages.todo.length) bits.push(`○ ${p.stages.todo.length} a fazer`);
-    if (p.stages.feito.length) bits.push(`☑ ${p.stages.feito.length} em Feito`);
+    if (p.stages.feito.length) bits.push(`☑ ${p.stages.feito.length} em Feito/PR`);
     if (p.stages.qa.length) bits.push(`🔍 ${p.stages.qa.length} em validação`);
-    if (p.stages.done.length) bits.push(`✓ ${p.stages.done.length}${SC.data.fields.points && p.donePts ? ` (${p.donePts} pts)` : ""}`);
+    if (!filtered && p.stages.done.length) bits.push(`✓ ${p.stages.done.length}${SC.data.fields.points && p.donePts ? ` (${p.donePts} pts)` : ""}`);
     if (p.stalled) bits.push(`⏳ ${p.stalled} parada(s)`);
-    if (p.returns) bits.push(`🔁 ${p.returns} retorno(s)`);
+    if (p.returns) bits.push(`🔁 ${p.returns} reabertura(s)`);
     main.appendChild(el("div", "m-row-sub", bits.join(" · ") || "sem itens"));
     sm.append(av, main);
     det.appendChild(sm);
-    for (const s of STAGES.filter((x) => x.id !== "done")) {
+    if (picked) {
+      const g = STAGES.find((x) => x.id === picked);
+      const head = el("div", "stage-list-h pp-pick");
+      head.append(el("b", null, `${g.icon} ${g.label} · ${p.stages[picked].length}`));
+      const all = el("button", "link", "mostrar todas");
+      all.addEventListener("click", (e) => { e.preventDefault(); SC.pStage.delete(p.id); const y = $("scroll").scrollTop; renderPeople(); $("scroll").scrollTop = y; });
+      head.appendChild(all);
+      det.appendChild(head);
+    }
+    for (const s of STAGES.filter((x) => (picked ? x.id === picked : x.id !== "done" || filtered))) {
       for (const i of p.stages[s.id]) {
+        if (filtered && !picked && !p.active.has(i.key)) continue;
         const age = businessAge(lastMove(i));
         const right = el("span", "dm-right");
         right.append(prioPill(i.priority), el("span", "m-row-r", age ? `${age}d` : "hoje"));
         det.appendChild(issueLine(i, right, `${s.icon} ${i.status.name}${i.isSubtask ? " · subtarefa" : ""}${i.parentKey ? ` · ↳ ${i.parentKey}` : ""}`, SC.data.url));
       }
     }
-    box.appendChild(det);
+    // Scrum Master: os cards que ela movimentou no período (mesmo sem estar atribuída)
+    if (p.isSm) {
+      const moved = [...p.active].map((k) => byKey.get(k)).filter((i) => i && i.assignee?.id !== p.id);
+      if (moved.length) det.appendChild(el("div", "m-sub pp-sub", `Cards que movimentou ${PERIOD_LABEL[SC.period]}`));
+      for (const i of moved.slice(0, 20)) {
+        const last = [...(i.transitions || [])].reverse().find((t) => t.by === p.id);
+        const right = el("span", "dm-right");
+        right.append(prioPill(i.priority), el("span", "m-row-r", last ? dayShort(isoOfMs(last.at)) : ""));
+        det.appendChild(issueLine(i, right, `${last ? `${last.fromName} → ${last.toName}` : i.status.name}${i.assignee ? ` · ${i.assignee.name}` : ""}`, SC.data.url));
+      }
+    }
+    return det;
+  };
+
+  const shownSm = sm.filter((p) => !q || p.name.toLowerCase().includes(q));
+  if (shownSm.length) {
+    box.appendChild(el("div", "m-sub", "Scrum Master"));
+    for (const p of shownSm) box.appendChild(personCardSc(p));
+    box.appendChild(el("div", "m-sub", "Desenvolvimento"));
   }
-  if (!shown.length) { const e = el("div", "empty"); e.innerHTML = "<b>🔎</b>Ninguém com esse nome na sprint."; box.appendChild(e); }
+  const shownDevs = devs.filter(match).sort(sortFn);
+  for (const p of shownDevs) box.appendChild(personCardSc(p));
+  const shownDesign = design.filter(match).sort(sortFn);
+  if (shownDesign.length) {
+    box.appendChild(el("div", "m-sub", "Design UI/UX (fora das sugestões de implementação e das regras de WIP)"));
+    for (const p of shownDesign) box.appendChild(personCardSc(p));
+  }
+  const shownQa = qa.filter(match).sort(sortFn);
+  if (shownQa.length) {
+    box.appendChild(el("div", "m-sub", "QA — validação (fora das regras de WIP e de atribuição)"));
+    for (const p of shownQa) box.appendChild(personCardSc(p));
+  }
+  if (!shownDevs.length && !shownQa.length && !shownDesign.length) { const e = el("div", "empty"); e.innerHTML = filtered ? `<b>🔎</b>Ninguém com movimento ${PERIOD_LABEL[SC.period]}.` : "<b>🔎</b>Ninguém com esse nome na sprint."; box.appendChild(e); }
 }
 
 /* ---------- Riscos ---------- */
 
 function scRisks() {
   return scSprints().map(({ space: sp, sprint: s }) => ({ sp, s,
-    r: sprintRisks(s, { staleDays: SC.data.settings.staleDays, today: SC.data.today, isHigh: isHighPrio }) }));
+    r: sprintRisks(s, { staleDays: scSettings().staleDays, today: SC.data.today, isHigh: isHighPrio, fromMs: scFrom(s), qaPeople: scSettings().qaPeople || [] }) }));
 }
 
 function renderRisks() {
@@ -4165,24 +4735,26 @@ function renderRisks() {
   const sum = el("div", "dm-sum rk-sum");
   for (const x of RISKS) {
     const n = merged[x.id].length;
-    const hot = ["flagged", "returned", "overdue", "highTodo"].includes(x.id) || (x.id === "feitoQueue" && n >= SC.data.settings.feitoThreshold);
+    const hot = ["flagged", "overdue", "highTodo"].includes(x.id) || (x.id === "returned" && merged.returned.some((r) => r.count > 1))
+      || (x.id === "feitoQueue" && n >= scSettings().feitoThreshold);
     const t = el("button", `dm-tile ${n && hot ? "err" : ""} ${n ? "has" : ""}`);
     t.append(el("b", null, String(n)), el("span", null, `${x.icon} ${x.label}`));
-    t.dataset.tip = x.tip;
+    t.dataset.tip = `${x.tip}${x.state ? " · situação atual" : ` · ${PERIOD_LABEL[SC.period]}`}`;
     t.disabled = !n;
     t.addEventListener("click", () => document.getElementById(`rk-${x.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" }));
     sum.appendChild(t);
   }
   box.appendChild(sum);
+  box.appendChild(el("p", "muted xs", `Reabertas, fila do QA, aguardando deploy e entradas seguem o período (${PERIOD_LABEL[SC.period]}); impedidas, paradas, atrasadas e sem responsável mostram a situação de agora.`));
 
-  const qa = merged.qaQueue;
-  if (qa.length >= 3) {
+  const qaQ = merged.qaQueue;
+  if (qaQ.length >= 3) {
     const p = el("div", "dv-pace down");
-    p.append(el("b", null, "!"), el("span", null, `${qa.length} itens esperando validação — o mais antigo há ${qa[0].age} dia(s) útil(eis). Vale combinar prioridade com o QA na daily.`));
+    p.append(el("b", null, "!"), el("span", null, `${qaQ.length} itens na coluna Validação — o mais antigo há ${qaQ[0].age} dia(s) útil(eis). Vale combinar prioridade com o QA na daily.`));
     box.appendChild(p);
   }
 
-  /* causas de retorno registradas pelo QA */
+  /* causas de reabertura registradas pelo QA */
   const causes = {};
   for (const r of merged.returned) for (const c of returnCauses(r.issue)) causes[c] = (causes[c] || 0) + 1;
   if (Object.keys(causes).length) {
@@ -4212,26 +4784,32 @@ function renderRisks() {
       const i = r.issue;
       let sub = `${i.status.name}${i.assignee ? ` · ${i.assignee.name}` : " · sem responsável"}`;
       let right = r.age ? `${r.age}d` : "hoje";
+      if (x.id === "flagged" && r.why) sub = `${r.why}${i.assignee ? ` · ${i.assignee.name}` : ""}`;
       if (x.id === "returned") {
         const cs = returnCauses(i);
-        sub = `voltou ${r.count}× · ${r.last.fromName} → ${r.last.toName}${r.last.byName ? ` por ${r.last.byName}` : ""}${cs.length ? ` · causa: ${cs.join(", ")}` : ""}`;
-        right = dayShort(isoOfMs(r.last.at));
+        sub = `reaberta ${r.count}× · última: ${r.last.fromName} → ${r.last.toName}${r.last.byName ? ` por ${r.last.byName}${r.byQa ? " (QA)" : ""}` : ""}${cs.length ? ` · causa: ${cs.join(", ")}` : ""}`;
+        right = `${r.count}×`;
       }
       if (x.id === "overdue") right = `${r.late}d atrasada`;
       if (x.id === "overEstimate") right = `+${fmtDur(r.over)}`;
+      if (x.id === "orphanSubs") { sub = `subtarefa em ${r.own} · pai ${i.parentKey} já ${stageLabel(i).toLowerCase()}${i.assignee ? ` · ${i.assignee.name}` : ""}`; right = r.own; }
+      if (x.id === "unassigned") {
+        c.appendChild(taskRow(i, { meta: `${stageLabel(i)}${r.age ? ` · parada há ${r.age}d` : ""}${i.parentKey ? ` · ↳ ${i.parentKey}` : ""}`,
+          actions: [prioPill(i.priority), assignControl(i, null)] }));
+        continue;
+      }
       const rr = el("span", "dm-right");
       rr.append(prioPill(i.priority));
-      if (x.id === "unassigned") rr.append(assignControl(i, null));
-      else rr.append(el("span", "m-row-r", right));
+      rr.append(el("span", "m-row-r", right));
       const line = issueLine(i, rr, `${sub}${i.parentKey ? ` · ↳ ${i.parentKey}` : ""}`, SC.data.url);
-      if (["flagged", "returned", "overdue"].includes(x.id)) line.classList.add("late");
+      if (["flagged", "overdue"].includes(x.id) || (x.id === "returned" && r.count > 1)) line.classList.add("late");
       c.appendChild(line);
     }
     if (rows.length > 15) c.appendChild(el("p", "muted xs", `+ ${rows.length - 15}`));
     box.appendChild(c);
   }
   if (!any) { const e = el("div", "empty"); e.innerHTML = "<b>✓</b>Nenhum risco na sprint agora."; box.appendChild(e); }
-  if (!SC.data.fields.flagged) box.appendChild(el("p", "muted xs", "O campo de impedimento (Flagged) não foi encontrado neste Jira — “Impedidas” fica sempre vazio."));
+  if (!SC.data.fields.flagged) box.appendChild(el("p", "muted xs", "O campo Flagged não foi encontrado neste Jira — “Impedidas” usa só a coluna Impedido/Aguardando."));
 }
 
 /** Texto curto para levar à daily (Teams ou presencial). */
@@ -4286,6 +4864,7 @@ $("scUnit").addEventListener("click", (e) => {
   const b = e.target.closest("button");
   if (!b || b.disabled) return;
   SC.unit = b.dataset.unit;
+  try { localStorage.setItem("qf.scUnit", SC.unit); } catch { /* sem storage */ }
   document.querySelectorAll("#scUnit button").forEach((x) => x.classList.toggle("on", x === b));
   renderSprint();
 });
@@ -4297,14 +4876,30 @@ $("ppSort").addEventListener("click", (e) => {
   renderPeople();
 });
 $("ppFilter").addEventListener("input", () => { SC.q = $("ppFilter").value; renderPeople(); });
+let scSearchTimer = null;
+$("scSearch").addEventListener("input", () => {
+  clearTimeout(scSearchTimer);
+  scSearchTimer = setTimeout(() => { SC.search = $("scSearch").value; renderSprint(); $("scroll").scrollTop = 0; }, 150);
+});
+document.querySelectorAll("#scPeriod button").forEach((b) => b.classList.toggle("on", b.dataset.p === SC.period));
+document.querySelectorAll("#scUnit button").forEach((b) => b.classList.toggle("on", b.dataset.unit === SC.unit));
+$("scPeriod").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  SC.period = b.dataset.p;
+  document.querySelectorAll("#scPeriod button").forEach((x) => x.classList.toggle("on", x === b));
+  try { localStorage.setItem("qf.scPeriod", SC.period); } catch { /* sem storage */ }
+  renderScrum();
+});
 
 /* =====================================================================
    QuickFill DESIGN — HUs (prototipação → entregue ao dev)
    ===================================================================== */
 
-const DS = { data: null, seq: 0, who: "all", figma: null, handoff: {}, open: new Set() };
+const DS = { data: null, seq: 0, who: "all", figma: null, handoff: {}, open: new Set(), drafts: {} };
 
 async function loadHus({ force = false } = {}) {
+  force = force || takeFresh("design");
   const seq = ++DS.seq;
   if (!DS.data) {
     try {
@@ -4312,6 +4907,7 @@ async function loadHus({ force = false } = {}) {
       if (designData?.issues && !DS.data) { DS.data = designData; renderHus(); }
     } catch { /* sem cache */ }
   }
+  if (canSkipFetch(DS.data, force)) { renderHus(); return; }
   $("huInfo").textContent = DS.data ? "atualizando…" : "";
   if (!DS.data) $("husBox").innerHTML = `<p class="muted xs">Lendo suas HUs…</p>`;
   try {
@@ -4373,7 +4969,7 @@ function handoffCount(key) {
 
 function handoffPanel(r) {
   const i = r.issue;
-  const cur = DS.handoff[i.key] || { items: {}, notes: "" };
+  const cur = DS.drafts[i.key] || DS.handoff[i.key] || { items: {}, notes: "" };
   const box = el("div", "handoff");
   const items = {};
   for (const [id, label] of HANDOFF_ITEMS) {
@@ -4395,11 +4991,15 @@ function handoffPanel(r) {
   bar.append(save, pub);
   box.appendChild(bar);
   const collect = () => Object.fromEntries(Object.entries(items).map(([k, cb]) => [k, cb.checked]));
+  // Rascunho do checklist enquanto não salva
+  box.addEventListener("change", () => { DS.drafts[i.key] = { ...cur, items: collect(), notes: notes.value }; saveViewSoon(); });
+  notes.addEventListener("input", () => { DS.drafts[i.key] = { ...cur, items: collect(), notes: notes.value }; saveViewSoon(); });
   const run = async (publish) => {
     const its = collect();
     if (publish && Object.values(its).some((v) => !v) && !confirm("Há itens desmarcados. Publicar o handoff assim mesmo?")) return;
     save.disabled = pub.disabled = true;
     try {
+      delete DS.drafts[i.key];
       DS.handoff[i.key] = await send("HANDOFF_SAVE", { key: i.key, items: its, notes: notes.value, publish,
         labels: Object.fromEntries(HANDOFF_ITEMS), figma: figmaFor(i)?.design || "" });
       toast(publish ? `Handoff de ${i.key} publicado na HU.` : "Checklist salvo.", "ok");
@@ -4422,6 +5022,7 @@ function huLine(r, d) {
   else if (r.age) bits.push(`há ${r.age}d nesta etapa`);
   const fg = figmaFor(i);
   if (!fg && ["doing", "review", "handoff"].includes(r.stage)) bits.push("sem Figma");
+  if (r.blocked) bits.unshift("⛔ impedida");
   const right = el("span", "dm-right");
   if (fg) {
     right.append(linkBtn("Figma", fg.design, `Abrir no Figma — ${fg.via}`), linkBtn("▶ Protótipo", fg.proto, `Ver o protótipo navegável — ${fg.via}`));
@@ -4450,7 +5051,7 @@ function renderHus() {
   $("huFigma").classList.toggle("hidden", !d.figmaUrl);
   const data = DS.who === "mine" ? { ...d, issues: d.issues.filter((i) => i.mine) } : d;
   const b = designBoard(data, { project: gspace.project });
-  $("huInfo").textContent = `etiquetas: ${d.labels.join(", ") || "—"} · atualizado ${since(d.generatedAt)}`;
+  $("huInfo").textContent = `${d.ownSpace ? `espaço ${(d.projects || []).join(", ")}` : `etiquetas: ${d.labels.join(", ") || "—"}`} · atualizado ${since(d.generatedAt)}`;
 
   const k = el("div", "m-kpis four");
   const inSprintQueue = b.waiting.filter((r) => r.stage === "queue").length;
@@ -4463,6 +5064,12 @@ function renderHus() {
   box.appendChild(k);
 
   if (d.figmaApi && DS.figma?.error) note(box, "warn", `Figma: ${DS.figma.error}`);
+  if (b.blocked.length) {
+    const c = mCard("⛔ Impedidas / aguardando", String(b.blocked.length));
+    c.classList.add("hu-wait");
+    for (const r of b.blocked.slice(0, 10)) c.appendChild(huLine(r, d));
+    box.appendChild(c);
+  }
 
   if (b.waiting.length) {
     const c = mCard("⏰ Devs aguardando design", "HUs da sprint ativa que ainda não saíram da prototipação");
@@ -4560,31 +5167,38 @@ function renderQaQueue() {
   const box = $("qaqBox");
   box.innerHTML = "";
   $("qqInfo").textContent = `atualizado ${since(d.generatedAt)}`;
-  const rows = d.issues.filter((i) => QQ.who === "all" || i.mine)
-    .map((i) => ({ i, age: businessAge(i.waitingSince) }))
+  const from = qpFrom();
+  const rows = d.issues.filter((i) => (QQ.who === "all" || i.mine) && inSpace(i.key))
+    .map((i) => ({ i, age: businessAge(i.waitingSince), recent: (i.waitingSince || 0) >= from }))
     .sort((a, b) => (a.i.priority?.rank ?? 99) - (b.i.priority?.rank ?? 99) || b.age - a.age);
+  const recent = rows.filter((r) => r.recent), older = rows.filter((r) => !r.recent);
   const k = el("div", "m-kpis four");
   const high = rows.filter((r) => isHighPrio(r.i.priority)).length;
   k.append(
-    kpiTile(String(rows.length), "aguardando validação"),
+    kpiTile(String(rows.length), "aguardando validação", gspace.project || "todos os espaços"),
+    kpiTile(String(recent.length), `chegaram ${QP_LABEL[QP.period]}`, older.length ? `${older.length} mais antiga(s)` : ""),
     kpiTile(String(high), "alta / crítica", "", high ? "warn" : "ok"),
     kpiTile(rows.length ? `${Math.max(...rows.map((r) => r.age))}d` : "—", "mais antiga", "dias úteis na fila", rows.some((r) => r.age >= 3) ? "warn" : ""),
-    kpiTile(String(d.issues.filter((i) => i.mine).length), "atribuídas a você"),
   );
   box.appendChild(k);
-  const c = mCard("Próximas a validar", "prioridade, depois tempo esperando");
-  for (const { i, age } of rows.slice(0, 40)) {
-    const right = el("span", "dm-right");
-    const test = el("button", "btn xs-btn", "Testar");
-    test.dataset.tip = "Abre na aba Tarefa para apontar e registrar a evidência";
-    test.addEventListener("click", (e) => { e.stopPropagation(); openFromPanel({ key: i.key, parentKey: i.isSubtask ? i.parentKey : null }); });
-    right.append(test, prioPill(i.priority), el("span", "m-row-r", age ? `${age}d` : "hoje"));
-    const line = issueLine(i, right, `${i.status.name}${i.sentBy ? ` · enviado por ${i.sentBy}` : ""}${i.assignee ? ` · ${i.assignee.name}` : ""}${i.parentKey ? ` · ↳ ${i.parentKey}` : ""}`, d.url);
-    if (age >= 3) line.classList.add("late");
-    c.appendChild(line);
-  }
-  if (!rows.length) c.appendChild(el("div", "empty", "Nada esperando validação 🎉"));
-  box.appendChild(c);
+  const section = (title, sub, list) => {
+    const c = mCard(title, sub);
+    for (const { i, age } of list.slice(0, 40)) {
+      const right = el("span", "dm-right");
+      const test = el("button", "btn xs-btn", "Testar");
+      test.dataset.tip = "Abre na aba Tarefa para apontar e registrar a evidência";
+      test.addEventListener("click", (e) => { e.stopPropagation(); openFromPanel({ key: i.key, parentKey: i.isSubtask ? i.parentKey : null }); });
+      right.append(test, prioPill(i.priority), el("span", "m-row-r", age ? `${age}d` : "hoje"));
+      const line = issueLine(i, right, `${i.status.name}${i.sentBy ? ` · enviado por ${i.sentBy}` : ""}${i.assignee ? ` · ${i.assignee.name}` : ""}${i.parentKey ? ` · ↳ ${i.parentKey}` : ""}`, d.url);
+      if (age >= 3) line.classList.add("late");
+      c.appendChild(line);
+    }
+    if (list.length > 40) c.appendChild(el("p", "muted xs", `+ ${list.length - 40}`));
+    return c;
+  };
+  if (recent.length) box.appendChild(section(`Chegaram ${QP_LABEL[QP.period]}`, "prioridade, depois tempo esperando", recent));
+  if (older.length) box.appendChild(section("Esperando há mais tempo", `antes do período · ${older.length}`, older));
+  if (!rows.length) box.appendChild(el("div", "empty", "Nada esperando validação 🎉"));
   if (d.truncated) note(box, "warn", "Mais de 200 itens: mostrando os primeiros.");
 }
 
@@ -4648,8 +5262,190 @@ $("btnEvidence").addEventListener("click", async () => {
    Ligações
    ===================================================================== */
 
+/* ---------- Voltar de onde parou ----------
+ * Sair clicando fora, com Esc, abrindo uma demanda ou trocando de aba guarda a tela (aba, rolagem,
+ * filtros, cartões abertos e campos digitados) na sessão do Chrome; ao reabrir, tudo volta do jeito
+ * que estava, com os dados já carregados. O X fecha "de verdade": limpa isso e recarrega do Jira. */
+const VIEW_KEY = `qfView:${ROLE}`;
+const FRESH_KEY = `qfFresh:${ROLE}`;
+const RESUME = { active: false, fresh: new Set(), maxAge: 10 * 60 * 1000, quitting: false };
+const takeFresh = (k) => RESUME.fresh.delete(k);
+const canSkipFetch = (data, force) => !force && RESUME.active && !!data && Date.now() - (data.generatedAt || data.fetchedAt || 0) < RESUME.maxAge;
+const EV_IDS = ["evEnv", "evSteps", "evLink", "evReason", "evCategory", "evTarget"];
+
+function viewSnapshot() {
+  const v = { savedAt: Date.now(), mode: state.mode, scroll: $("scroll").scrollTop, teamDate: team.date };
+  if (ROLE === "scrum") v.sc = { search: SC.search || "", q: SC.q || "", stageSel: SC.stageSel || null, pOpen: [...SC.pOpen],
+    pStage: [...SC.pStage], treeAll: SC.treeAll, deploy: SC.deployDraft || null };
+  if (ROLE === "design") v.ds = { open: [...DS.open], drafts: DS.drafts };
+  if (HAS_PROG) v.dv = { date: DV.date };
+  if (ROLE === "qa") v.qa = { qqWho: QQ.who, dayDate: state.dayDate, evOpen: !$("evidenceBody").classList.contains("hidden"),
+    evResult: EV.result, ev: Object.fromEntries(EV_IDS.map((id) => [id, $(id).value])) };
+  return v;
+}
+async function saveView() {
+  if (RESUME.quitting) return;
+  try { await chrome.storage.session.set({ [VIEW_KEY]: viewSnapshot() }); } catch { /* sem storage */ }
+}
+let viewTimer = null;
+function saveViewSoon() { clearTimeout(viewTimer); viewTimer = setTimeout(saveView, 300); }
+
+/** Lê a tela salva (ou o pedido de recomeçar do zero, deixado pelo X). */
+async function resumeView() {
+  try {
+    const got = await chrome.storage.session.get({ [VIEW_KEY]: null, [FRESH_KEY]: false });
+    if (got[FRESH_KEY]) {
+      await chrome.storage.session.remove(FRESH_KEY);
+      RESUME.fresh = new Set(["scrum", "design", "demands", "panel"]);
+      return null;
+    }
+    const v = got[VIEW_KEY];
+    if (!v || Date.now() - v.savedAt > 12 * 3600 * 1000) return null;
+    RESUME.active = true;
+    return v;
+  } catch { return null; }
+}
+
+/** Antes de desenhar: filtros, buscas e cartões abertos. */
+function applyViewState(v) {
+  if (v.sc) {
+    SC.search = v.sc.search || ""; $("scSearch").value = SC.search;
+    SC.q = v.sc.q || ""; $("ppFilter").value = SC.q;
+    SC.stageSel = v.sc.stageSel; SC.treeAll = !!v.sc.treeAll;
+    SC.pOpen = new Set(v.sc.pOpen || []); SC.pStage = new Map(v.sc.pStage || []);
+    SC.deployDraft = v.sc.deploy || null;
+  }
+  if (v.ds) { DS.open = new Set(v.ds.open || []); DS.drafts = v.ds.drafts || {}; }
+  if (v.dv?.date) DV.date = v.dv.date;
+  if (v.teamDate) team.date = v.teamDate;
+  if (v.qa) {
+    QQ.who = v.qa.qqWho || "all";
+    document.querySelectorAll("#qqWho button").forEach((b) => b.classList.toggle("on", b.dataset.who === QQ.who));
+    if (v.qa.dayDate) state.dayDate = v.qa.dayDate;
+  }
+}
+
+/** Depois de desenhar: rolagem, formulário de deploy e evidência. */
+function applyViewAfter(v) {
+  let tries = 0;
+  let waiting = !!v.sc?.deploy;   // o formulário de deploy reabre antes de rolar (senão a tela desloca)
+  const sc = $("scroll");
+  const tick = () => {
+    if ((!waiting && sc.scrollHeight - sc.clientHeight >= v.scroll) || ++tries > 50) { sc.style.overflowAnchor = "none"; sc.scrollTop = v.scroll; setTimeout(() => { sc.style.overflowAnchor = ""; }, 500); return; }
+    setTimeout(tick, 100);
+  };
+  if (v.scroll) tick();
+  if (v.sc?.deploy) {
+    let n = 0;
+    const reopen = () => {
+      if (!SC.data) { if (++n < 50) setTimeout(reopen, 100); else waiting = false; return; }
+      const d = v.sc.deploy;
+      const sp = (SC.data.spaces || []).find((x) => x.project === d.project);
+      const sprint = sp?.sprints?.find((s) => String(s.id) === String(d.sprintId));
+      if (sp && sprint) openDeployForm(sp, sprint, sprint.issues.filter((i) => stageOf(i) === "feito"), d).finally(() => { waiting = false; });
+      else waiting = false;
+    };
+    reopen();
+  }
+  if (v.qa) {
+    for (const [id, val] of Object.entries(v.qa.ev || {})) if (val != null && id !== "evTarget" && id !== "evCategory") $(id).value = val;
+    if (v.qa.evOpen) {
+      $("btnShowEvidence").click();
+      if (v.qa.ev?.evCategory) $("evCategory").value = v.qa.ev.evCategory;
+      if (v.qa.ev?.evTarget) $("evTarget").value = v.qa.ev.evTarget;
+    }
+    if (v.qa.evResult) setEvResult(v.qa.evResult);
+  }
+}
+
+/* ---------- Setas de recolher/expandir em todos os cards ----------
+ * Cada card com título ganha uma seta à direita; o estado fica salvo por tela e título. */
+const FOLD_KEY = `qf.fold.${ROLE}`;
+let folded = new Set();
+try { folded = new Set(JSON.parse(localStorage.getItem(FOLD_KEY) || "[]")); } catch { /* sem storage */ }
+const cardKey = (card) => {
+  const t = card.querySelector(":scope > .card-t");
+  const raw = (t.querySelector("b")?.textContent || t.firstChild?.textContent || "").replace(/[\d·:()%“”"]+/g, "").trim();
+  return `${card.closest("[data-pane]")?.dataset.pane || ""}:${raw}`;
+};
+function enhanceCards(root = $("scroll")) {
+  for (const t of root.querySelectorAll(".card > .card-t")) {
+    const card = t.parentElement;
+    if (card.dataset.fold || card.tagName === "DETAILS" || card.classList.contains("deploy-form") || card.classList.contains("nofold")) continue;
+    card.dataset.fold = "1";
+    const key = cardKey(card);
+    if (folded.has(key)) card.classList.add("folded");
+    const b = el("button", "fold-btn");
+    b.innerHTML = `<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 10l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    b.title = "Recolher / expandir";
+    b.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const on = card.classList.toggle("folded");
+      if (on) folded.add(key); else folded.delete(key);
+      try { localStorage.setItem(FOLD_KEY, JSON.stringify([...folded])); } catch { /* sem storage */ }
+    });
+    t.appendChild(b);
+  }
+}
+let foldRaf = 0;
+new MutationObserver(() => { cancelAnimationFrame(foldRaf); foldRaf = requestAnimationFrame(() => enhanceCards()); })
+  .observe($("scroll"), { childList: true, subtree: true });
+
+/* ---------- Painel lateral ⇄ modal grande ---------- */
+$("btnLayout").textContent = inPanel ? "⤢" : "◧";
+$("btnLayout").title = inPanel ? "Abrir como modal grande sobre o Jira" : "Abrir no painel lateral do Chrome";
+$("btnLayout").addEventListener("click", async () => {
+  await saveView();   // o outro formato abre exatamente onde você está
+  if (inPanel) {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      await chrome.tabs.sendMessage(tab.id, { type: "QUICKFILL_OPEN_MODAL" });
+      window.close();
+    } catch { toast("O modal abre sobre uma página do Jira — abra o Jira nesta aba e tente de novo."); }
+    return;
+  }
+  try {
+    const w = await chrome.windows.getCurrent();
+    await chrome.sidePanel.open({ windowId: w.id });
+    close();
+  } catch {
+    try { await send("OPEN_SIDE_PANEL"); close(); }
+    catch { toast("Não deu para abrir o painel daqui — clique no ícone da extensão na barra do Chrome.", "info"); }
+  }
+});
+
+/* ---------- Aviso de nova versão (repositório da equipe) ---------- */
+async function checkForUpdate() {
+  try {
+    const u = await send("CHECK_UPDATE", {});
+    if (!u?.newer) return;
+    const { updateDismissed } = await chrome.storage.local.get({ updateDismissed: "" });
+    if (updateDismissed === u.latest) return;
+    const box = $("updateBox");
+    box.querySelector("span").textContent = `Nova versão ${u.latest} disponível — você está na ${u.current}.${u.notes ? ` ${u.notes}` : ""}`;
+    box.classList.remove("hidden");
+    $("btnUpdateGet").onclick = (e) => (u.download ? openIssue(u.download, e) : toast("O update.json não tem o link de download."));
+    $("btnUpdateHow").onclick = () => toast("Rode o atualizar-quickfill.bat (pasta dist do repositório). Depois clique em “Recarregar extensão” que aparece aqui no topo.", "info");
+    $("updateClose").onclick = () => { box.classList.add("hidden"); chrome.storage.local.set({ updateDismissed: u.latest }).catch(() => {}); };
+  } catch { /* sem aviso: segue normal */ }
+}
+
 async function close() {
-  await flushDraft(snapshot);
+  await Promise.all([flushDraft(snapshot), saveView()]);
+  if (inIframe) window.parent.postMessage({ type: "QUICKFILL_CLOSE" }, "*");
+  else window.close();
+}
+
+/** X: fecha de verdade — sem rascunho nem tela salva; na próxima vez tudo vem do Jira. */
+async function quit() {
+  RESUME.quitting = true;
+  clearTimeout(viewTimer);
+  try {
+    await chrome.storage.session.remove(VIEW_KEY);
+    await chrome.storage.session.set({ [FRESH_KEY]: true });
+    await chrome.storage.local.remove(["scrumData", "designData", "devDemands", "panelData"]);
+  } catch { /* segue fechando */ }
+  if (ROLE === "qa") await clearDraft();
   if (inIframe) window.parent.postMessage({ type: "QUICKFILL_CLOSE" }, "*");
   else window.close();
 }
@@ -4665,7 +5461,8 @@ $("boardAll").addEventListener("click", () => pickBoard("all"));
 $("boardMine").addEventListener("click", () => pickBoard("mine"));
 $("boardNone").addEventListener("click", () => pickBoard("none"));
 $("btnApply").addEventListener("click", apply);
-$("btnClose").addEventListener("click", close);
+$("btnClose").addEventListener("click", quit);
+$("btnClose").title = "Fechar e recomeçar (na próxima vez recarrega tudo do Jira). Clicar fora ou Esc fecha guardando onde você parou.";
 $("btnOptions").addEventListener("click", () => chrome.runtime.openOptionsPage());
 $("btnDiscard").addEventListener("click", discardAll);
 $("restoredClose").addEventListener("click", () => $("restored").classList.add("hidden"));
@@ -4725,8 +5522,12 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === "Enter") apply();
 });
 window.addEventListener("message", (e) => { if (e.data?.type === "QUICKFILL_REQUEST_CLOSE") close(); });
-window.addEventListener("pagehide", () => flushDraft(snapshot));
-window.addEventListener("blur", () => flushDraft(snapshot));
+window.addEventListener("pagehide", () => { if (!RESUME.quitting) { flushDraft(snapshot); saveView(); } });
+window.addEventListener("blur", () => { if (!RESUME.quitting) { flushDraft(snapshot); saveView(); } });
+document.addEventListener("visibilitychange", () => { if (document.hidden && !RESUME.quitting) saveView(); });
+document.addEventListener("input", saveViewSoon, true);
+document.addEventListener("change", saveViewSoon, true);
+$("scroll").addEventListener("scroll", saveViewSoon, { passive: true });
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg?.type !== "BATCH_PROGRESS") return;
@@ -4777,7 +5578,8 @@ chrome.runtime.onMessage.addListener((msg) => {
     $("dayPillGoal").textContent = `meta ${fmtDur(DEF.workday.goal)}`;
   } catch { /* sem configuração ainda */ }
 
-  refreshDayPill();
+  if (ROLE !== "scrum") refreshDayPill();
+  checkForUpdate();
 
   document.querySelector(".brand h1").textContent = ROLE_NAME;
   document.title = `Jira ${ROLE_NAME}`;
@@ -4788,18 +5590,42 @@ chrome.runtime.onMessage.addListener((msg) => {
     try { gspace.project = localStorage.getItem("qf.gspace") || ""; } catch { /* sem storage */ }
     try { DS.who = localStorage.getItem("qf.huWho") || "all"; } catch { /* sem storage */ }
     document.querySelectorAll("#huWho button").forEach((b) => b.classList.toggle("on", b.dataset.who === DS.who));
-    const projects = [defaults?.spaces?.batch?.label || "MEED", defaults?.spaces?.sustentacao?.label || "SUS"];
+    const projects = ROLE === "design" && defaults?.designProjects?.length
+      ? defaults.designProjects
+      : [defaults?.spaces?.batch?.label || "MEED", defaults?.spaces?.sustentacao?.label || "SUS"];
+    if (!projects.includes(gspace.project)) gspace.project = "";
     renderGlobalSpace([...new Set(projects)]);
+    if (ROLE === "design" && !defaults?.designProjects?.length) toast("Configure o projeto do espaço de Design nas Opções — por enquanto aparecem MEED e SUS.", "info");
     const TABS = { dev: ["today", "progress", "demands", "team"], scrum: ["sprint", "people", "risks", "team"], design: ["today", "hus", "progress", "team"] }[ROLE];
     $("ctxLine").textContent = { dev: "Seu dia, seu progresso e sua equipe", scrum: "Sprint, pessoas, riscos e equipe", design: "Seu dia, suas HUs e suas metas" }[ROLE] || "";
     if (HAS_PROG) await warmProg();
     const want = params.get("tab");
-    setMode(TABS.includes(want) ? want : TABS[0], { restoring: true });
+    const view = await resumeView();
+    if (view) applyViewState(view);
+    setMode(view && TABS.includes(view.mode) ? view.mode : TABS.includes(want) ? want : TABS[0], { restoring: true });
+    if (view) applyViewAfter(view);
     return;
   }
 
+  // QA: o mesmo filtro de Espaço dos outros QuickFill (Painel, Validação, Meu dia, Equipe)
+  try { gspace.project = localStorage.getItem("qf.gspace") || ""; } catch { /* sem storage */ }
+  const qaSpaces = [...new Set([defaults?.spaces?.batch?.label || "MEED", defaults?.spaces?.sustentacao?.label || "SUS"])];
+  if (!qaSpaces.includes(gspace.project)) gspace.project = "";
+  renderGlobalSpace(qaSpaces);
+  document.querySelectorAll("#qaPeriod button").forEach((b) => b.classList.toggle("on", b.dataset.p === QP.period));
+  $("qaPeriod").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) setQaPeriod(b.dataset.p); });
+  $("spaceBar").classList.toggle("hidden", !["panel", "qaq", "day", "team"].includes(state.mode));
+  $("qaPeriodBar").classList.toggle("hidden", !["panel", "qaq", "day"].includes(state.mode));
+
   initBoards();
-  if (await restore(defaults)) return;
+  const restored = await restore(defaults);
+  const view = await resumeView();
+  if (view) {
+    applyViewState(view);
+    if (VIEW_TABS.includes(view.mode)) setMode(view.mode, { restoring: true });
+    applyViewAfter(view);
+  }
+  if (restored || view) return;
 
   const fromParam = params.get("key");
   if (fromParam) { $("parentKey").value = fromParam; return findSubtasks(); }

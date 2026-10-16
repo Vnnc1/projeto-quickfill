@@ -7,6 +7,23 @@ indo nos últimos dias** e **onde estão as suas demandas**, sempre de olho na e
 
 A barra **Espaço · Todos | MEED | SUS** vale para todas as abas.
 
+## Voltar de onde parou (3.11)
+
+Fechar clicando fora, com **Esc**, abrindo uma demanda no Jira ou trocando de aba do navegador guarda a tela:
+aba, rolagem, filtros, buscas, cartões abertos e o dia escolhido. Ao reabrir, volta igual, com os
+dados que já estavam carregados (até 10 min; o ↻ sempre busca de novo). O **X** fecha de verdade: limpa isso e,
+na próxima vez, tudo vem do Jira.
+
+## Novidades da 3.5
+
+- **Progresso › Sprint:** opção **Todas as sprints atuais (MEED + SUS)**; na sprint, tudo (metas, média, sequência,
+  gráficos) conta só as horas em demandas da(s) sprint(s). Barras por espaço e, em "Onde foi seu tempo", a sua
+  atuação em cada demanda dia a dia.
+- **Demandas:** primeiro **Em seu nome agora** (com **▶ atuando agora**), depois Feito, Reaberto, Deploy,
+  Validação e **Finalizados** — essas colunas mostram só o que entrou nelas no período (Hoje = hoje).
+  O card de deploy vira **Deploy DES** (MEED) ou **Deploy HMP** (SUS). **Impedido** tem card próprio.
+- **Personalizar:** blocos separados por tela, intervalo de atualização e "Restaurar padrão".
+
 ## Hoje
 
 - **Anel do dia:** horas apontadas até o teto. O ponto amarelo marca a meta. Ao lado, uma frase

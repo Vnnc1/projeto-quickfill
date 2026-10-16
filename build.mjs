@@ -17,7 +17,7 @@ import { renderIcon, ICON_SIZES } from "./tools/icons.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SRC = join(ROOT, "jira-quickfill-qa");
-const VERSION = "3.4.0";
+const VERSION = "4.0.0";
 
 const ROLES = {
   qa: {
@@ -54,6 +54,19 @@ const ROLES = {
   },
 };
 
+/* Distribuição pelo repositório da equipe (release.config.json):
+ *   { "repo": "https://github.com/ORG/quickfill", "branch": "main", "notes": "o que mudou" }
+ * Gera update.json (lido pela extensão para avisar "nova versão") e, com --zip, os .zip em dist/
+ * junto do atualizar-quickfill.ps1 que a equipe roda para instalar/atualizar. */
+const RELEASE_FILE = join(ROOT, "release.config.json");
+if (!existsSync(RELEASE_FILE)) writeFileSync(RELEASE_FILE, JSON.stringify({ repo: "", branch: "main", notes: "" }, null, 2) + "\n");
+const RELEASE = JSON.parse(readFileSync(RELEASE_FILE, "utf8"));
+const GH = String(RELEASE.repo || "").match(/github\.com\/([^/]+)\/([^/#?]+?)(?:\.git)?\/?$/);
+const BRANCH = RELEASE.branch || "main";
+const UPDATE_URL = RELEASE.updateUrl || (GH ? `https://raw.githubusercontent.com/${GH[1]}/${GH[2]}/${BRANCH}/update.json` : "");
+const downloadOf = (dir) => (RELEASE.downloadBase ? `${RELEASE.downloadBase.replace(/\/+$/, "")}/${dir}.zip`
+  : GH ? `https://github.com/${GH[1]}/${GH[2]}/raw/${BRANCH}/dist/${dir}.zip` : "");
+
 const PER_ROLE = new Set(["lib/role.js", "manifest.json", "content.js", "content.css", "README.md", ...ICON_SIZES.map((n) => `icons/icon${n}.png`)]);
 
 function listFiles(dir, base = "") {
@@ -76,6 +89,8 @@ function roleJs(role) {
  * Gerado pelo build.mjs — não edite à mão.
  */
 export const ROLE = "${role}";
+/** update.json do repositório da equipe (aviso de nova versão). Vazio = sem aviso. */
+export const UPDATE_URL = "${UPDATE_URL}";
 `;
 }
 
@@ -107,7 +122,6 @@ function contentJs(role, r) {
   swap(`btn.className = "jqf-launcher";`, `btn.className = "jqf-launcher jqf-${role}";`);
   swap(`btn.title = "Jira QuickFill QA (Ctrl+Shift+J)";`, `btn.title = "${r.title} (Ctrl+Shift+${r.key})";`);
   swap(`btn.textContent = "⏱";`, `btn.textContent = "${r.launcher.text}";`);
-  swap(`const BASE_W = 520, BASE_H = 700;`, `const BASE_W = ${r.frame[0]}, BASE_H = ${r.frame[1]};`);
   return s;
 }
 
@@ -116,9 +130,8 @@ function contentCss(role, r) {
   if (role === "qa") return base;
   return `${base.trimEnd()}
 
-/* QuickFill ${role.toUpperCase()}: botão empilhado acima dos outros perfis, moldura mais larga */
+/* QuickFill ${role.toUpperCase()}: botão empilhado acima dos outros perfis */
 .jqf-launcher.jqf-${role} { bottom: ${r.launcher.bottom}px; font-size: 10px; font-weight: 800; letter-spacing: .02em; color: ${r.launcher.color}; }
-.jqf-frame.jqf-frame-${role} { width: ${r.frame[0]}px; height: ${r.frame[1]}px; }
 `;
 }
 
@@ -148,10 +161,26 @@ for (const [role, r] of Object.entries(ROLES)) {
   console.log(`✓ ${r.dir} (${role})`);
 
   if (process.argv.includes("--zip")) {
-    const zip = join(ROOT, `${r.dir}.zip`);
+    mkdirSync(join(ROOT, "dist"), { recursive: true });
+    const zip = join(ROOT, "dist", `${r.dir}.zip`);
     try {
       execFileSync("powershell", ["-NoProfile", "-Command", `Compress-Archive -Path '${out}' -DestinationPath '${zip}' -Force`], { stdio: "ignore" });
       console.log(`  zip: ${zip}`);
     } catch { console.log("  (não foi possível gerar o .zip — compacte a pasta manualmente)"); }
   }
 }
+
+/* ---------- update.json e instalador da equipe ---------- */
+const update = {
+  version: VERSION,
+  date: new Date().toISOString().slice(0, 10),
+  notes: RELEASE.notes || "",
+  packages: Object.fromEntries(Object.entries(ROLES).map(([role, r]) => [role, { version: VERSION, folder: r.dir, download: downloadOf(r.dir) }])),
+};
+writeFileSync(join(ROOT, "update.json"), JSON.stringify(update, null, 2) + "\n");
+mkdirSync(join(ROOT, "dist"), { recursive: true });
+const ps1 = readFileSync(join(ROOT, "tools", "atualizar-quickfill.ps1"), "utf8").replace("__UPDATE_URL__", UPDATE_URL || "__UPDATE_URL__");
+writeFileSync(join(ROOT, "dist", "atualizar-quickfill.ps1"), "\ufeff" + ps1);
+writeFileSync(join(ROOT, "dist", "atualizar-quickfill.bat"),
+  "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0atualizar-quickfill.ps1\" %*\r\npause\r\n");
+console.log(UPDATE_URL ? `✓ update.json (${VERSION}) · aviso lido de ${UPDATE_URL}` : "✓ update.json gerado — preencha \"repo\" em release.config.json para ligar o aviso de versão");

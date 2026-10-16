@@ -8,12 +8,37 @@
 <body>
   <div class="page">
     <header class="hdr">
-      <span class="logo" aria-hidden="true">⏱</span>
+      <img class="logo" src="icons/icon48.png" alt="" aria-hidden="true" />
       <div>
         <h1>QuickFill · Opções</h1>
         <p>Conexão, jornada, story points e quadros</p>
       </div>
     </header>
+
+    <!-- Aparência e abertura -->
+    <section class="card">
+      <h2>Aparência e abertura</h2>
+      <div class="field">
+        <span>Cor de destaque</span>
+        <div class="swatches" id="swatches"></div>
+        <input id="accentColor" type="hidden" />
+      </div>
+      <p class="help">A mesma paleta para todos os QuickFill. <b>Padrão do perfil</b> volta para a cor original: QA azul, DEV verde, SCRUM âmbar e DESIGN rosa. Muda na hora, inclusive com a extensão aberta.</p>
+      <div class="grid2">
+        <label class="field">
+          <span>Abrir pelo botão do Jira e pelo atalho</span>
+          <select id="openMode" class="inp">
+            <option value="panel">Painel lateral do Chrome (ao lado do Jira)</option>
+            <option value="modal">Modal grande sobre o Jira</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Aviso de nova versão — endereço do update.json <em>opcional</em></span>
+          <input id="updateUrl" class="inp mono" placeholder="vem do pacote da equipe" />
+        </label>
+      </div>
+      <p class="help">O ícone da extensão na barra do Chrome sempre abre o painel lateral. Dentro do QuickFill, o botão <b>◧ / ⤢</b> alterna entre painel e modal grande sem perder onde você estava.</p>
+    </section>
 
     <!-- Conexão -->
     <section class="card">
@@ -68,6 +93,46 @@
         <label class="field"><span>Teto padrão (h)</span><input id="teamCapHours" class="inp mono" type="number" min="0.5" max="24" step="0.5" placeholder="6" /></label>
       </div>
       <p class="help">A aba <b>Equipe</b> mostra quem apontou horas nesses projetos. Meta e teto de cada pessoa (ex.: 7h / 9h) são ajustados direto na aba, abrindo o cartão da pessoa; estes são os valores para quem não tiver ajuste próprio.</p>
+      <div class="field">
+        <span>Equipe de QA</span>
+        <div class="people-pick">
+          <input id="qaSearch" class="inp" placeholder="Buscar no Jira pelo nome para adicionar" autocomplete="off" />
+          <div id="qaResults" class="pick-results"></div>
+          <div id="qaChips" class="pick-chips"></div>
+        </div>
+        <input id="qaPeople" type="hidden" />
+      </div>
+      <p class="help">Quem valida. No SCRUM, ficam fora das regras de WIP, de “livre” e das sugestões de atribuição, e aparecem como QA nas reaberturas.</p>
+      <div class="grid2">
+        <div class="field">
+          <span>Scrum Master / liderança</span>
+          <div class="people-pick">
+            <input id="smSearch" class="inp" placeholder="Buscar no Jira pelo nome" autocomplete="off" />
+            <div id="smResults" class="pick-results"></div>
+            <div id="smChips" class="pick-chips"></div>
+          </div>
+          <input id="smPeople" type="hidden" />
+        </div>
+        <div class="field">
+          <span>Design UI/UX</span>
+          <div class="people-pick">
+            <input id="designPSearch" class="inp" placeholder="Buscar no Jira pelo nome" autocomplete="off" />
+            <div id="designPResults" class="pick-results"></div>
+            <div id="designPChips" class="pick-chips"></div>
+          </div>
+          <input id="designPeople" type="hidden" />
+        </div>
+        <div class="field">
+          <span>Não mostrar em Pessoas (contas de teste)</span>
+          <div class="people-pick">
+            <input id="ignoreSearch" class="inp" placeholder="Buscar no Jira pelo nome" autocomplete="off" />
+            <div id="ignoreResults" class="pick-results"></div>
+            <div id="ignoreChips" class="pick-chips"></div>
+          </div>
+          <input id="ignorePeople" type="hidden" />
+        </div>
+      </div>
+      <p class="help">Scrum Master e Design ganham seções próprias em <b>SCRUM › Pessoas</b>, fora das regras de WIP e das sugestões de atribuição (que ficam só para quem desenvolve). Quem estiver em “Não mostrar” some de Pessoas.</p>
     </section>
 
     <!-- SCRUM -->
@@ -100,6 +165,7 @@
     <section class="card" data-roles="design">
       <h2>HUs de design (DESIGN)</h2>
       <div class="grid2">
+        <label class="field"><span>Projeto(s) do espaço de Design</span><input id="designProjects" class="inp mono" placeholder="ex.: DES" /></label>
         <label class="field"><span>Etiquetas que marcam “precisa de design”</span><input id="designLabels" class="inp mono" placeholder="design, ux, ui" /></label>
         <label class="field"><span>Meta de HUs entregues por semana</span><input id="designWeeklyGoal" class="inp mono" type="number" min="1" max="50" step="1" placeholder="3" /></label>
       </div>
@@ -125,8 +191,12 @@
         <label class="field"><span>Deploy de produção</span><input id="stagePrd" class="inp" placeholder="PRD, Produção" /></label>
         <label class="field"><span>Validação (QA)</span><input id="stageQa" class="inp" placeholder="Validação, Homologação" /></label>
         <label class="field"><span>Reaberto</span><input id="stageReopen" class="inp" placeholder="Reaberto" /></label>
+        <label class="field"><span>Validado</span><input id="stageValidated" class="inp" placeholder="Validado, Aprovado" /></label>
+        <label class="field"><span>Impedido / Aguardando</span><input id="stageBlocked" class="inp" placeholder="Impedido, Aguardando" /></label>
       </div>
-      <p class="help">Nomes de coluna/status separados por vírgula (sem diferença de acento ou maiúscula; basta o começo da palavra). Fluxo: Em andamento → <b>Feito</b> → <b>Deploy</b> → <b>Validação</b> → Concluído.</p>
+      <p class="help">Nomes de coluna/status separados por vírgula (sem diferença de acento ou maiúscula; basta o começo da palavra). Fluxo: Em andamento → <b>Feito</b> → <b>Deploy</b> → <b>Validação</b> → <b>Validado</b> → Concluído; <b>Impedido/Aguardando</b> é uma etapa à parte (não conta como em andamento). “Validado” não é fila do QA.</p>
+      <div class="row-btns"><button id="btnStatusMap" class="btn">Ver como cada status foi classificado</button></div>
+      <div id="statusMap" class="status-map"></div>
     </section>
 
     <!-- QA: reprovação -->

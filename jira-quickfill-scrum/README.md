@@ -6,6 +6,29 @@ com o quê** e **o que está travando**, além da equipe ao vivo. Só grava no J
 
 A barra **Espaço · Todos | MEED | SUS** vale para todas as abas.
 
+## Voltar de onde parou (3.11)
+
+Fechar clicando fora, com **Esc**, abrindo uma demanda no Jira ou trocando de aba do navegador guarda a tela:
+aba, rolagem, filtros, buscas, cartões abertos e campos digitados (rascunho). Ao reabrir, volta igual, com os
+dados que já estavam carregados (até 10 min; o ↻ sempre busca de novo). O **X** fecha de verdade: limpa isso e,
+na próxima vez, tudo vem do Jira.
+
+## PR, Feito e subtarefas (3.11)
+
+- **PR** (pull request, Meeds All) conta como **Feito** (aguardando deploy), igual ao Feito/hotfix do SUS — inclusive
+  o aviso e o botão do card “Realizando Deploy”.
+- Subtarefa ainda aberta (ex.: em PR) com a **tarefa pai concluída ou validada** segue o pai: não conta como em
+  andamento nem no WIP. Elas aparecem em **Riscos › Subtarefas esquecidas**, para fechar no Jira.
+
+## Novidades da 3.5
+
+- **Período** (Sprint · Hoje · 7 · 14 dias) vale para Sprint, Pessoas e Riscos.
+- **⋯ Ajustes** aplicam na hora (regras e quais blocos aparecem).
+- **Impedido / Aguardando** e **Validado** em "Onde estão os itens"; **Métricas de fluxo** (cycle time, tempo na
+  validação, reabertas, aprovadas de 1ª, vazão) e **Resumo do período**.
+- **Pessoas:** a equipe de QA (Opções › Equipe) fica à parte, fora das regras de WIP, "livre" e sugestões.
+- **Reabertas:** cada entrada em Reaberto conta uma volta (2×, 3×…); **Fila do QA** é só a coluna Validação.
+
 ## Sprint
 
 - Cartão da sprint ativa de cada espaço: datas, dia atual (*dia 8 de 9 úteis*), quanto falta e o objetivo.
