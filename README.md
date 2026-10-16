@@ -26,15 +26,17 @@ Extensões do Chrome para o dia a dia da equipe no Jira (Meeds All e Sustentaç�
 3. **Carregue no Chrome:** abra `chrome://extensions`, ligue o **Modo do desenvolvedor** (canto superior direito),
    clique em **Carregar sem compactação** e escolha a pasta. O caminho já está copiado: é só colar com **Ctrl+V**.
 4. **Configure:** clique no ícone do QuickFill › ⚙ **Opções** e preencha a URL do Jira, o seu e-mail e o
-   [API token do Jira](https://id.atlassian.com/manage-profile/security/api-tokens). Depois clique em **Testar conexão**.
+   [API token do Jira](https://id.atlassian.com/manage-profile/security/api-tokens). Depois clique em **Testar conexão** e, na mesma página, em **Ativar atualização com um clique**.
 
 ## Atualizar
 
-Quando sair versão nova, aparece no topo do QuickFill: **"Nova versão disponível"**.
+**Com um clique (recomendado):** ative uma vez em **Opções › Atualização com um clique**.
+Clique no botão, tecle **Win + R**, cole (**Ctrl+V**) e tecle **Enter**. Pronto: quando sair versão nova,
+o aviso no topo do QuickFill mostra **Atualizar agora**, e ele baixa, instala e se recarrega sozinho.
 
-1. Clique em **Copiar comando de atualização**.
-2. Tecle **Win + R**, cole (**Ctrl+V**) e tecle **Enter**.
-3. Volte ao QuickFill e clique em **Recarregar extensão**.
+**Sem ativar:** no aviso **"Nova versão disponível"**, clique em **Copiar comando de atualização**, tecle
+**Win + R**, cole e tecle **Enter**. Depois clique em **Recarregar extensão**. Esse comando também ativa o
+botão para as próximas vezes.
 
 As configurações, o token e as metas continuam.
 
