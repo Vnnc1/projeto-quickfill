@@ -17,7 +17,7 @@ import { renderIcon, ICON_SIZES } from "./tools/icons.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SRC = join(ROOT, "jira-quickfill-qa");
-const VERSION = "4.1.0";
+const VERSION = "4.2.0";
 
 const ROLES = {
   qa: {
@@ -69,6 +69,9 @@ const ghFile = (path) => (PRIVATE
   ? `https://api.github.com/repos/${GH[1]}/${GH[2]}/contents/${path}?ref=${BRANCH}`
   : `https://raw.githubusercontent.com/${GH[1]}/${GH[2]}/${BRANCH}/${path}`);
 const UPDATE_URL = RELEASE.updateUrl || (GH ? ghFile("update.json") : "");
+// Repositório público: um comando (ou o .bat, que é só esse comando) sempre baixa o instalador mais novo.
+const SCRIPT_URL = GH && !PRIVATE ? ghFile("dist/quickfill.ps1") : "";
+const INSTALL_CMD = SCRIPT_URL ? `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ${SCRIPT_URL} | iex"` : "";
 const downloadOf = (dir) => (RELEASE.downloadBase ? `${RELEASE.downloadBase.replace(/\/+$/, "")}/${dir}.zip`
   : GH ? ghFile(`dist/${dir}.zip`) : "");
 
@@ -96,6 +99,8 @@ function roleJs(role) {
 export const ROLE = "${role}";
 /** update.json do repositório da equipe (aviso de nova versão). Vazio = sem aviso. */
 export const UPDATE_URL = "${UPDATE_URL}";
+/** Comando de instalação/atualização (Win+R). Com QF_EXT_ID também ativa o botão "Atualizar agora". */
+export const INSTALL_CMD = ${JSON.stringify(INSTALL_CMD)};
 `;
 }
 
@@ -177,9 +182,6 @@ for (const [role, r] of Object.entries(ROLES)) {
 }
 
 /* ---------- update.json e instalador da equipe ---------- */
-// Repositório público: um comando (ou o .bat, que é só esse comando) sempre baixa o instalador mais novo.
-const SCRIPT_URL = GH && !PRIVATE ? ghFile("dist/quickfill.ps1") : "";
-const INSTALL_CMD = SCRIPT_URL ? `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ${SCRIPT_URL} | iex"` : "";
 const update = {
   version: VERSION,
   private: PRIVATE,
@@ -192,7 +194,7 @@ const update = {
 };
 writeFileSync(join(ROOT, "update.json"), JSON.stringify(update, null, 2) + "\n");
 mkdirSync(join(ROOT, "dist"), { recursive: true });
-const ps1 = readFileSync(join(ROOT, "tools", "atualizar-quickfill.ps1"), "utf8").replace("__UPDATE_URL__", UPDATE_URL || "__UPDATE_URL__");
+const ps1 = readFileSync(join(ROOT, "tools", "atualizar-quickfill.ps1"), "utf8").replace("__UPDATE_URL__", UPDATE_URL || "__UPDATE_URL__").replaceAll("__SCRIPT_URL__", SCRIPT_URL || "__SCRIPT_URL__");
 if (INSTALL_CMD) {
   // Público: quickfill.ps1 é lido direto do GitHub; o .bat tem só o comando (um arquivo, sempre a versão mais nova).
   writeFileSync(join(ROOT, "dist", "quickfill.ps1"), ps1);
