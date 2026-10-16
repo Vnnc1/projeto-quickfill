@@ -8,4 +8,4 @@
  */
 export const ROLE = "dev";
 /** update.json do repositório da equipe (aviso de nova versão). Vazio = sem aviso. */
-export const UPDATE_URL = "https://api.github.com/repos/Vnnc1/projeto-quickfill/contents/update.json?ref=master";
+export const UPDATE_URL = "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/update.json";

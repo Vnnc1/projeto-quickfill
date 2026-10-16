@@ -1,6 +1,6 @@
 {
   "repo": "https://github.com/Vnnc1/projeto-quickfill",
   "branch": "master",
-  "notes": "Novos ícones: DESIGN (paleta) e SCRUM (quadro kanban).",
-  "private": true
+  "notes": "Instalação e atualização em um clique (repositório público).",
+  "private": false
 }

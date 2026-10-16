@@ -1,67 +1,50 @@
 # Como distribuir e atualizar os QuickFill na equipe
 
-Repositório **privado**: <https://github.com/Vnnc1/projeto-quickfill> (branch `master`).
+Repositório **público**: <https://github.com/Vnnc1/projeto-quickfill> (branch `master`). Não precisa de
+token nem de conta no GitHub para instalar ou atualizar.
 
-Você mantém o código aqui. A equipe instala uma vez e, a cada versão nova, a própria extensão avisa.
-Para atualizar, a pessoa **roda um arquivo e clica em "Recarregar"**, sem você mandar arquivo para cada um.
+## Para a equipe: mande só isto
 
-Como o repositório é privado, o GitHub só entrega os arquivos com autenticação. Por isso o instalador e o
-aviso de versão usam um **token só de leitura, só deste repositório**, criado por você uma vez e passado
-à equipe. Ninguém da equipe precisa ter conta no GitHub.
+> **Instalar o QuickFill:** abra <https://github.com/Vnnc1/projeto-quickfill> e siga o "Instalar (1 minuto)".
 
----
+Não precisa mandar arquivo nenhum. O instalador sempre baixa a versão mais nova.
 
-## 1. Criar o token de leitura (você, uma vez)
+| Quando | O que a pessoa faz |
+|---|---|
+| **Primeira vez** | Win+R › cola o comando do README › escolhe o perfil › carrega a pasta (já copiada) em `chrome://extensions` › preenche as Opções |
+| **Versão nova** | Clica em **Copiar comando de atualização** no aviso do QuickFill › Win+R › Ctrl+V › Enter › **Recarregar extensão** |
 
-1. Acesse <https://github.com/settings/personal-access-tokens/new> (token **fine-grained**).
-2. Preencha assim:
-   - **Token name:** `quickfill-leitura`
-   - **Expiration:** 1 ano (ou o prazo que preferir; quando vencer, gere outro e repasse)
-   - **Repository access:** *Only select repositories* › `projeto-quickfill`
-   - **Permissions › Repository permissions › Contents:** **Read-only** (o resto fica *No access*)
-3. Clique em **Generate token** e copie (começa com `github_pat_`).
-4. Passe o token para a equipe **por mensagem privada** (Teams), nunca no repositório nem em grupo aberto.
+- A extensão fica em `Documentos\QuickFill\<pasta>` (ex.: `C:\Users\Fernanda\Documents\QuickFill\jira-quickfill-dev`).
+  Se o Documentos estiver no OneDrive, vai para lá.
+- O instalador atualiza só os perfis que a pessoa já tem. Para instalar outro, basta rodar e escolher.
 
-> Esse token só consegue **ler** este repositório: não altera nada nem dá acesso a outros projetos.
-> Se ele vazar, é só apagá-lo em *Settings › Developer settings › Personal access tokens* e gerar outro.
-
-## 2. Instalar na máquina de cada pessoa (uma vez)
-
-1. Mandar para a pessoa os dois arquivos da pasta `dist/` (só desta vez):
-   `atualizar-quickfill.bat` e `atualizar-quickfill.ps1`. Os dois precisam ficar na mesma pasta.
-2. A pessoa dá dois cliques no **`atualizar-quickfill.bat`**, cola o **token** quando pedir e escolhe o perfil:
-   `qa`, `dev`, `scrum`, `design` ou `todos`.
-   - Os QuickFill ficam na pasta **Documentos** da pessoa: `C:\Users\<pessoa>\Documents\QuickFill\<pasta>`
-     (ex.: `C:\Users\Fernanda\Documents\QuickFill\jira-quickfill-dev`). Se o Documentos estiver no OneDrive, vai para lá.
-   - O token fica guardado **criptografado** para aquele usuário do Windows; o instalador não pergunta de novo.
-3. No Chrome: `chrome://extensions` › ligar **Modo do desenvolvedor** › **Carregar sem compactação** › escolher a pasta.
-4. Nas **Opções** da extensão: URL do Jira, e-mail e token do Jira. Se preferir, use **Importar configuração**
-   com um arquivo exportado por você.
-
-## 3. Publicar uma versão nova (você)
+## Para você: publicar uma versão
 
 1. Altere o código em `jira-quickfill-qa/`.
-2. Em `build.mjs`, aumente `VERSION` (ex.: `4.0.1` → `4.1.0`). Em `release.config.json`, escreva em `notes`
-   o que mudou (aparece no aviso da extensão).
+2. Em `build.mjs`, aumente `VERSION` (ex.: `4.1.0` → `4.2.0`). Em `release.config.json`, escreva em `notes`
+   o que mudou (é o texto que aparece no aviso).
 3. Rode `npm test` e depois `npm run zip`.
-4. Faça `git add -A`, `git commit -m "QuickFill 4.1.0"` e `git push`.
+4. Faça `git add -A`, `git commit -m "QuickFill 4.2.0"` e `git push`.
 
-## 4. Receber a atualização (equipe)
+Em até 6 horas, quem abrir o QuickFill vê o aviso de versão nova.
 
-1. Em até 6 horas (ou ao reabrir), aparece no topo do QuickFill: **"Nova versão 4.1.0 disponível"**.
-2. A pessoa roda o **`atualizar-quickfill.bat`** de novo. Ele atualiza os perfis que ela já tem instalados.
-3. Ao abrir o QuickFill aparece **"Recarregar extensão"**. Um clique e pronto: configuração, token do Jira e metas continuam.
+## Arquivos de publicação (gerados pelo `npm run zip`)
 
----
+| Arquivo | Para quê |
+|---|---|
+| `update.json` | Versão mais nova, notas e o comando de instalação, lidos pela extensão para avisar |
+| `dist/jira-quickfill-*.zip` | Os quatro pacotes |
+| `dist/quickfill.ps1` | O instalador (baixado direto pelo comando) |
+| `dist/atualizar-quickfill.bat` | O mesmo comando em um arquivo, para quem prefere dois cliques |
 
-### Perguntas comuns
+## Perguntas comuns
 
-- **"O GitHub recusou o acesso"** ao rodar o instalador: o token está errado ou venceu. Rode de novo e cole um
-  token válido (o instalador já apagou o antigo). Para trocar de propósito: `atualizar-quickfill.bat -TrocarToken`.
-- **O aviso de versão não aparece:** a extensão usa o token que o instalador grava na pasta dela
-  (`update.local.json`). Quem instalou sem o instalador pode colar o token em
-  **Opções › Aparência e abertura › Token de leitura do repositório**.
-- **"Desative extensões no modo de desenvolvedor"** ao abrir o Chrome: é o aviso normal para extensões fora da
-  loja. É só fechar.
-- **Quero 100% automático, sem rodar o .bat:** só publicando na Chrome Web Store como **não listada**, ou pelo
-  Google Workspace da empresa (o admin instala para todos). O código é o mesmo.
+- **"Desative extensões no modo de desenvolvedor"** ao abrir o Chrome: é o aviso normal para extensões fora
+  da loja. É só fechar.
+- **Win+R está bloqueado na máquina:** abra o **PowerShell** pelo menu Iniciar e cole o mesmo comando.
+- **O Windows avisou que o .bat é de fonte desconhecida:** clique em *Mais informações › Executar assim mesmo*,
+  ou use o comando pelo Win+R, que não passa por esse aviso.
+- **Quero 100% automático, sem nem colar o comando:** só publicando na Chrome Web Store como **não listada**
+  (US$ 5 uma vez), ou pelo Google Workspace da empresa. O código é o mesmo.
+- **E o token de leitura da versão anterior (repositório privado)?** Não é mais necessário. Quem já tinha
+  continua funcionando; pode apagá-lo no GitHub se quiser.

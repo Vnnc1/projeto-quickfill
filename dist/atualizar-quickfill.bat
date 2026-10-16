@@ -1,3 +1,3 @@
 @echo off
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0atualizar-quickfill.ps1" %*
-pause
+title QuickFill - instalar / atualizar
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/quickfill.ps1 | iex"

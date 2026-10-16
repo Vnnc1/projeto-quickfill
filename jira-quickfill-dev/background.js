@@ -2954,7 +2954,7 @@ async function checkUpdate(p = {}) {
   if (!res.ok) throw new Error(`Não consegui ler o aviso de versão (${res.status}).`);
   const json = await res.json();
   const pkg = json.packages?.[ROLE] || {};
-  const data = { configured: true, private: !!json.private, repo: json.repo || "", latest: pkg.version || json.version, notes: json.notes || "", download: pkg.download || json.download || "",
+  const data = { configured: true, private: !!json.private, repo: json.repo || "", installCommand: json.installCommand || "", guide: json.guide || "", latest: pkg.version || json.version, notes: json.notes || "", download: pkg.download || json.download || "",
     folder: pkg.folder || "", date: json.date || "" };
   await chrome.storage.local.set({ updateCheck: { url, at: Date.now(), data } });
   return { ...data, current, newer: newer(data.latest, current) };

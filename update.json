@@ -1,29 +1,31 @@
 {
-  "version": "4.0.3",
-  "private": true,
+  "version": "4.1.0",
+  "private": false,
   "repo": "https://github.com/Vnnc1/projeto-quickfill",
+  "installCommand": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"irm https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/quickfill.ps1 | iex\"",
+  "guide": "https://github.com/Vnnc1/projeto-quickfill#readme",
   "date": "2026-10-16",
-  "notes": "Novos ícones: DESIGN (paleta) e SCRUM (quadro kanban).",
+  "notes": "Instalação e atualização em um clique (repositório público).",
   "packages": {
     "qa": {
-      "version": "4.0.3",
+      "version": "4.1.0",
       "folder": "jira-quickfill-qa",
-      "download": "https://api.github.com/repos/Vnnc1/projeto-quickfill/contents/dist/jira-quickfill-qa.zip?ref=master"
+      "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-qa.zip"
     },
     "dev": {
-      "version": "4.0.3",
+      "version": "4.1.0",
       "folder": "jira-quickfill-dev",
-      "download": "https://api.github.com/repos/Vnnc1/projeto-quickfill/contents/dist/jira-quickfill-dev.zip?ref=master"
+      "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-dev.zip"
     },
     "scrum": {
-      "version": "4.0.3",
+      "version": "4.1.0",
       "folder": "jira-quickfill-scrum",
-      "download": "https://api.github.com/repos/Vnnc1/projeto-quickfill/contents/dist/jira-quickfill-scrum.zip?ref=master"
+      "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-scrum.zip"
     },
     "design": {
-      "version": "4.0.3",
+      "version": "4.1.0",
       "folder": "jira-quickfill-design",
-      "download": "https://api.github.com/repos/Vnnc1/projeto-quickfill/contents/dist/jira-quickfill-design.zip?ref=master"
+      "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-design.zip"
     }
   }
 }

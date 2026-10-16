@@ -11,6 +11,10 @@
 # O endereço abaixo é preenchido pelo build.mjs (release.config.json).
 
 param([string]$Pacotes = "", [switch]$TrocarToken)
+try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
+Write-Host ""
+Write-Host "  QuickFill - instalar / atualizar" -ForegroundColor Cyan
+Write-Host ""
 
 $UpdateUrl = "__UPDATE_URL__"
 # Pasta Documentos da pessoa (ex.: C:\Users\Fernanda\Documents\QuickFill) — respeita Documentos no OneDrive
@@ -67,6 +71,7 @@ else {
   }
 }
 
+$novos = @()
 foreach ($p in $lista) {
   $pkg = $info.packages.$p
   if (-not $pkg) { Write-Host "Pacote desconhecido: $p" -ForegroundColor Yellow; continue }
@@ -74,6 +79,7 @@ foreach ($p in $lista) {
   Write-Host "Baixando $p $($pkg.version) ..."
   Invoke-WebRequest -Uri $pkg.download -OutFile $zip -Headers $headers -UseBasicParsing
   $pasta = Join-Path $Destino $pkg.folder
+  if (-not (Test-Path (Join-Path $pasta "manifest.json"))) { $novos += $pasta }
   $tmp = Join-Path $env:TEMP "qf-$p"
   if (Test-Path $tmp) { Remove-Item $tmp -Recurse -Force }
   Expand-Archive -Path $zip -DestinationPath $tmp -Force
@@ -90,5 +96,19 @@ foreach ($p in $lista) {
 }
 
 Write-Host ""
-Write-Host "Pronto. No Chrome: clique em 'Recarregar extensão' no aviso do QuickFill (ou em recarregar em chrome://extensions)."
-Write-Host "Primeira instalação: chrome://extensions > Modo do desenvolvedor > Carregar sem compactação > $Destino\<pasta>"
+if ($novos.Count) {
+  # Primeira instalação: abre a pasta e copia o caminho para colar no "Carregar sem compactação"
+  Write-Host "PRIMEIRA INSTALAÇÃO — falta só carregar no Chrome:" -ForegroundColor Yellow
+  Write-Host "  1. Abra chrome://extensions e ligue o 'Modo do desenvolvedor' (canto superior direito)"
+  Write-Host "  2. Clique em 'Carregar sem compactação' e escolha a pasta:"
+  foreach ($n in $novos) { Write-Host "       $n" -ForegroundColor Green }
+  Write-Host "     (o caminho já foi copiado — cole com Ctrl+V na barra de endereço da janela de escolha)"
+  Write-Host "  3. Nas Opções da extensão, preencha URL do Jira, e-mail e token do Jira"
+  try { Set-Clipboard -Value $novos[0] } catch { }
+  try { Start-Process explorer.exe $Destino } catch { }
+} else {
+  Write-Host "Atualizado! No Chrome, abra o QuickFill e clique em 'Recarregar extensão' no aviso do topo." -ForegroundColor Green
+  Write-Host "(ou em chrome://extensions clique no botão de recarregar do QuickFill)"
+}
+Write-Host ""
+Read-Host "Tecle Enter para fechar"

@@ -9,7 +9,7 @@
  * o README de cada pacote é mantido à mão.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, copyFileSync, readdirSync, existsSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -17,7 +17,7 @@ import { renderIcon, ICON_SIZES } from "./tools/icons.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const SRC = join(ROOT, "jira-quickfill-qa");
-const VERSION = "4.0.3";
+const VERSION = "4.1.0";
 
 const ROLES = {
   qa: {
@@ -177,10 +177,15 @@ for (const [role, r] of Object.entries(ROLES)) {
 }
 
 /* ---------- update.json e instalador da equipe ---------- */
+// Repositório público: um comando (ou o .bat, que é só esse comando) sempre baixa o instalador mais novo.
+const SCRIPT_URL = GH && !PRIVATE ? ghFile("dist/quickfill.ps1") : "";
+const INSTALL_CMD = SCRIPT_URL ? `powershell -NoProfile -ExecutionPolicy Bypass -Command "irm ${SCRIPT_URL} | iex"` : "";
 const update = {
   version: VERSION,
   private: PRIVATE,
   repo: RELEASE.repo || "",
+  installCommand: INSTALL_CMD,
+  guide: RELEASE.repo ? `${RELEASE.repo.replace(/\/+$/, "")}#readme` : "",
   date: new Date().toISOString().slice(0, 10),
   notes: RELEASE.notes || "",
   packages: Object.fromEntries(Object.entries(ROLES).map(([role, r]) => [role, { version: VERSION, folder: r.dir, download: downloadOf(r.dir) }])),
@@ -188,7 +193,14 @@ const update = {
 writeFileSync(join(ROOT, "update.json"), JSON.stringify(update, null, 2) + "\n");
 mkdirSync(join(ROOT, "dist"), { recursive: true });
 const ps1 = readFileSync(join(ROOT, "tools", "atualizar-quickfill.ps1"), "utf8").replace("__UPDATE_URL__", UPDATE_URL || "__UPDATE_URL__");
-writeFileSync(join(ROOT, "dist", "atualizar-quickfill.ps1"), "\ufeff" + ps1);
-writeFileSync(join(ROOT, "dist", "atualizar-quickfill.bat"),
-  "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0atualizar-quickfill.ps1\" %*\r\npause\r\n");
+if (INSTALL_CMD) {
+  // Público: quickfill.ps1 é lido direto do GitHub; o .bat tem só o comando (um arquivo, sempre a versão mais nova).
+  writeFileSync(join(ROOT, "dist", "quickfill.ps1"), ps1);
+  writeFileSync(join(ROOT, "dist", "atualizar-quickfill.bat"), `@echo off\r\ntitle QuickFill - instalar / atualizar\r\n${INSTALL_CMD}\r\n`);
+  for (const old of ["atualizar-quickfill.ps1"]) { try { rmSync(join(ROOT, "dist", old)); } catch { /* já não existe */ } }
+} else {
+  writeFileSync(join(ROOT, "dist", "atualizar-quickfill.ps1"), "\ufeff" + ps1);
+  writeFileSync(join(ROOT, "dist", "atualizar-quickfill.bat"),
+    "@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0atualizar-quickfill.ps1\" %*\r\n");
+}
 console.log(UPDATE_URL ? `✓ update.json (${VERSION}) · aviso lido de ${UPDATE_URL}` : "✓ update.json gerado — preencha \"repo\" em release.config.json para ligar o aviso de versão");

@@ -5425,12 +5425,19 @@ async function checkForUpdate() {
     box.querySelector("span").textContent = `Nova versão ${u.latest} disponível — você está na ${u.current}.${u.notes ? ` ${u.notes}` : ""}`;
     box.classList.remove("hidden");
     // Repositório privado: quem baixa é o instalador (com o token); o botão abre o repositório no GitHub
-    $("btnUpdateGet").textContent = u.private ? "Ver no GitHub" : "Baixar";
+    $("btnUpdateGet").textContent = "Ver o que mudou";
     $("btnUpdateGet").onclick = (e) => {
-      const url = u.private ? u.repo : u.download;
+      const url = u.guide || u.repo;
       return url ? openIssue(url, e) : toast("O update.json não tem o link.");
     };
-    $("btnUpdateHow").onclick = () => toast("Rode o atualizar-quickfill.bat (pasta dist do repositório). Depois clique em “Recarregar extensão” que aparece aqui no topo.", "info");
+    // Atualizar = colar um comando (Win+R ou PowerShell) e depois "Recarregar extensão"
+    $("btnUpdateHow").textContent = u.installCommand ? "Copiar comando de atualização" : "Como atualizar";
+    $("btnUpdateHow").onclick = async () => {
+      if (!u.installCommand) return toast("Rode o atualizar-quickfill.bat de novo. Depois clique em “Recarregar extensão” que aparece aqui no topo.", "info");
+      const ok = await copyText(u.installCommand);
+      toast(ok ? "Comando copiado! Tecle Win+R, cole (Ctrl+V) e Enter. Ao terminar, clique em “Recarregar extensão” aqui no topo."
+        : `Copie e rode: ${u.installCommand}`, ok ? "ok" : "info");
+    };
     $("updateClose").onclick = () => { box.classList.add("hidden"); chrome.storage.local.set({ updateDismissed: u.latest }).catch(() => {}); };
   } catch { /* sem aviso: segue normal */ }
 }
