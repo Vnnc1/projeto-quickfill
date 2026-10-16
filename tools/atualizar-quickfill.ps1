@@ -1,28 +1,22 @@
-# Instala ou atualiza os QuickFill desta máquina a partir do repositório da equipe.
+# Instala ou atualiza os QuickFill desta máquina a partir do repositório (privado) da equipe.
 #
-#   1ª vez: Win+R > cole o comando do README (ou dois cliques no atualizar-quickfill.bat) > escolha o perfil.
-#           Depois, em chrome://extensions: Modo do desenvolvedor > Carregar sem compactação > pasta indicada.
-#   Depois: no aviso "Nova versão" do QuickFill, clique em "Atualizar agora" (botão nativo — ver abaixo)
-#           ou em "Copiar comando de atualização" e cole no Win+R.
+#   1ª vez: rode o atualizar-quickfill.bat, cole o token de leitura que o responsável passou e escolha
+#           o perfil. Depois, em chrome://extensions: Modo do desenvolvedor > Carregar sem compactação >
+#           pasta indicada no final.
+#   Depois: quando a extensão avisar "Nova versão", rode o .bat de novo e clique em "Recarregar
+#           extensão" no aviso. Configuração, token do Jira e metas continuam.
 #
-# Botão "Atualizar agora": este script registra um pequeno ajudante do Chrome (Native Messaging, só para
-# este usuário, sem administrador) em Documentos\QuickFill\.ajudante. A extensão chama o ajudante, que roda
-# este mesmo script em modo silencioso e devolve o resultado; a extensão então se recarrega sozinha.
+#   -Pacotes qa,dev   instala/atualiza só esses     -TrocarToken   pede o token de novo
 #
-#   -Pacotes qa,dev   instala/atualiza só esses       -ExtId <id>   libera o botão para essa extensão
-#   -Silencioso       sem perguntas (usado pelo ajudante)   -TrocarToken   (repositório privado) pede o token de novo
-#   Pelo Win+R os mesmos valores podem vir em variáveis: QF_EXT_ID, QF_PACOTES.
-#
-# Os endereços abaixo são preenchidos pelo build.mjs (release.config.json).
+# O endereço abaixo é preenchido pelo build.mjs (release.config.json).
 
-param([string]$Pacotes = "", [switch]$TrocarToken, [switch]$Silencioso, [string]$ExtId = "")
+param([string]$Pacotes = "", [switch]$TrocarToken)
 try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
-if (-not $ExtId -and $env:QF_EXT_ID) { $ExtId = $env:QF_EXT_ID }
-if (-not $Pacotes -and $env:QF_PACOTES) { $Pacotes = $env:QF_PACOTES }
+Write-Host ""
+Write-Host "  QuickFill - instalar / atualizar" -ForegroundColor Cyan
+Write-Host ""
 
 $UpdateUrl = "__UPDATE_URL__"
-$ScriptUrl = "__SCRIPT_URL__"
-$HostName  = "com.quickfill.updater"
 # Pasta Documentos da pessoa (ex.: C:\Users\Fernanda\Documents\QuickFill) — respeita Documentos no OneDrive
 $Documentos = [Environment]::GetFolderPath("MyDocuments")
 if (-not $Documentos) { $Documentos = Join-Path $env:USERPROFILE "Documents" }
@@ -31,18 +25,10 @@ $TokenFile = Join-Path $Destino ".token"
 $ErrorActionPreference = "Stop"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-function Falhar([string]$msg) {
-  if ($Silencioso) { throw $msg }
-  Write-Host $msg -ForegroundColor Red
-  Read-Host "Tecle Enter para fechar" | Out-Null
-  exit 1
-}
-
-if (-not $Silencioso) { Write-Host ""; Write-Host "  QuickFill - instalar / atualizar" -ForegroundColor Cyan; Write-Host "" }
-if ($UpdateUrl -like "__*") { Falhar "Endereço de atualização não configurado (release.config.json)." }
+if ($UpdateUrl -like "__*") { Write-Host "Endereço de atualização não configurado (release.config.json)." -ForegroundColor Red; exit 1 }
 New-Item -ItemType Directory -Force -Path $Destino | Out-Null
 
-# Token de leitura (só quando o repositório é privado) — guardado criptografado para este usuário (DPAPI)
+# Token de leitura do repositório privado — guardado criptografado para este usuário do Windows (DPAPI)
 $privado = $UpdateUrl -like "*api.github.com*"
 $token = ""
 if ($privado) {
@@ -50,12 +36,11 @@ if ($privado) {
   if (Test-Path $TokenFile) {
     $sec = Get-Content $TokenFile | ConvertTo-SecureString
     $token = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
-  } elseif ($Silencioso) { Falhar "Token de leitura não configurado: rode o atualizar-quickfill uma vez pelo Win+R." }
-  else {
+  } else {
     Write-Host "Cole o token de leitura do QuickFill (pedir ao responsável) e tecle Enter:" -ForegroundColor Cyan
     $sec = Read-Host -AsSecureString
     $token = [Runtime.InteropServices.Marshal]::PtrToStringAuto([Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
-    if (-not $token) { Falhar "Sem token não dá para baixar do repositório privado." }
+    if (-not $token) { Write-Host "Sem token não dá para baixar do repositório privado." -ForegroundColor Red; exit 1 }
     $sec | ConvertFrom-SecureString | Set-Content $TokenFile
   }
 }
@@ -67,8 +52,11 @@ try {
   $sep = if ($UpdateUrl.Contains("?")) { "&" } else { "?" }
   $info = Invoke-RestMethod -Uri ("$UpdateUrl$sep" + "t=" + [DateTimeOffset]::Now.ToUnixTimeSeconds()) -Headers $headers -UseBasicParsing
 } catch {
-  if ($privado) { Remove-Item $TokenFile -Force -ErrorAction SilentlyContinue; Falhar "O GitHub recusou o acesso — o token pode estar errado ou vencido. Rode de novo e cole um token válido." }
-  Falhar "Não consegui ler $UpdateUrl : $($_.Exception.Message)"
+  if ($privado) {
+    Remove-Item $TokenFile -Force -ErrorAction SilentlyContinue
+    Write-Host "O GitHub recusou o acesso — o token pode estar errado ou vencido. Rode de novo e cole um token válido." -ForegroundColor Red
+  } else { Write-Host "Não consegui ler $UpdateUrl : $($_.Exception.Message)" -ForegroundColor Red }
+  exit 1
 }
 
 # Sem parâmetro: atualiza os que já estão instalados; se nenhum, pergunta qual instalar.
@@ -77,7 +65,6 @@ if ($Pacotes) { $lista = $Pacotes.Split(",") | ForEach-Object { $_.Trim().ToLowe
 else {
   $lista = @($todos | Where-Object { Test-Path (Join-Path $Destino $info.packages.$_.folder) })
   if (-not $lista) {
-    if ($Silencioso) { Falhar "Nenhum QuickFill instalado em $Destino." }
     Write-Host "Qual QuickFill instalar? ($($todos -join ', '), ou 'todos')"
     $r = (Read-Host).Trim().ToLower()
     $lista = if ($r -eq "todos") { $todos } else { $r.Split(",") | ForEach-Object { $_.Trim() } }
@@ -102,66 +89,11 @@ foreach ($p in $lista) {
   New-Item -ItemType Directory -Force -Path $pasta | Out-Null
   Get-ChildItem $pasta -Force | Remove-Item -Recurse -Force
   Copy-Item -Path (Join-Path $origem.FullName "*") -Destination $pasta -Recurse -Force
+  # A extensão usa o mesmo token (só leitura) para avisar quando sair versão nova
   if ($privado) { @{ token = $token } | ConvertTo-Json | Set-Content -Path (Join-Path $pasta "update.local.json") -Encoding UTF8 }
   Remove-Item $tmp -Recurse -Force; Remove-Item $zip -Force
   Write-Host "  OK  $p $($pkg.version) em $pasta" -ForegroundColor Green
 }
-
-# ---------------------------------------------------------------------------------------------------
-# Ajudante do botão "Atualizar agora" (Native Messaging). Registrado para este usuário (HKCU), liberado
-# só para as extensões QuickFill que pediram (ids em .ajudante\ids.txt).
-# ---------------------------------------------------------------------------------------------------
-$HostDir = Join-Path $Destino ".ajudante"
-$IdsFile = Join-Path $HostDir "ids.txt"
-$ids = @()
-if (Test-Path $IdsFile) { $ids = @(Get-Content $IdsFile | Where-Object { $_ -match '^[a-p]{32}$' }) }
-if ($ExtId -match '^[a-p]{32}$' -and $ids -notcontains $ExtId) { $ids += $ExtId }
-$ajudante = $false
-if ($ids.Count -and $ScriptUrl -notlike "__*") {
-  New-Item -ItemType Directory -Force -Path $HostDir | Out-Null
-  Set-Content -Path $IdsFile -Value $ids -Encoding ASCII
-  $hostPs1 = @'
-# Ajudante do QuickFill (Native Messaging): recebe {"action":"ping"|"update","package":"qa"} da extensão.
-$ErrorActionPreference = "Stop"
-$in = [Console]::OpenStandardInput(); $out = [Console]::OpenStandardOutput()
-function Ler { $b = New-Object byte[] 4; if ($in.Read($b, 0, 4) -lt 4) { return $null }
-  $n = [BitConverter]::ToInt32($b, 0); $buf = New-Object byte[] $n; $r = 0
-  while ($r -lt $n) { $k = $in.Read($buf, $r, $n - $r); if ($k -le 0) { break }; $r += $k }
-  [Text.Encoding]::UTF8.GetString($buf, 0, $r) | ConvertFrom-Json }
-function Responder($o) { $j = [Text.Encoding]::UTF8.GetBytes(($o | ConvertTo-Json -Compress))
-  $out.Write([BitConverter]::GetBytes($j.Length), 0, 4); $out.Write($j, 0, $j.Length); $out.Flush() }
-$msg = Ler
-$log = Join-Path $PSScriptRoot "ultima-atualizacao.log"
-try {
-  if ($msg.action -eq "ping") { Responder @{ ok = $true; helper = "1" }; exit 0 }
-  if ($msg.action -eq "update") {
-    $pkg = [string]$msg.package
-    if ($pkg -notmatch '^(qa|dev|scrum|design)$') { throw "Pacote inválido." }
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $code = Invoke-RestMethod -Uri ("__SCRIPT_URL__?t=" + [DateTimeOffset]::Now.ToUnixTimeSeconds()) -UseBasicParsing
-    & ([scriptblock]::Create($code)) -Pacotes $pkg -Silencioso *> $log
-    Responder @{ ok = $true }
-    exit 0
-  }
-  Responder @{ ok = $false; error = "Ação desconhecida." }
-} catch {
-  Responder @{ ok = $false; error = $_.Exception.Message }
-}
-'@
-  Set-Content -Path (Join-Path $HostDir "host.ps1") -Value $hostPs1.Replace("__SCRIPT_URL__", $ScriptUrl) -Encoding UTF8
-  Set-Content -Path (Join-Path $HostDir "host.bat") -Value "@echo off`r`npowershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"%~dp0host.ps1`"" -Encoding ASCII
-  $manifest = [ordered]@{ name = $HostName; description = "Atualizador do QuickFill"; path = (Join-Path $HostDir "host.bat"); type = "stdio";
-    allowed_origins = @($ids | ForEach-Object { "chrome-extension://$_/" }) }
-  $manifestPath = Join-Path $HostDir "$HostName.json"
-  ($manifest | ConvertTo-Json) | Set-Content -Path $manifestPath -Encoding ASCII
-  foreach ($k in @("HKCU:\Software\Google\Chrome\NativeMessagingHosts\$HostName", "HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\$HostName")) {
-    New-Item -Path $k -Force | Out-Null
-    Set-ItemProperty -Path $k -Name "(default)" -Value $manifestPath
-  }
-  $ajudante = $true
-}
-
-if ($Silencioso) { return }
 
 Write-Host ""
 if ($novos.Count) {
@@ -172,13 +104,11 @@ if ($novos.Count) {
   foreach ($n in $novos) { Write-Host "       $n" -ForegroundColor Green }
   Write-Host "     (o caminho já foi copiado — cole com Ctrl+V na barra de endereço da janela de escolha)"
   Write-Host "  3. Nas Opções da extensão, preencha URL do Jira, e-mail e token do Jira"
-  Write-Host "  4. Ainda nas Opções, clique em 'Ativar atualização com um clique' e cole o comando no Win+R"
   try { Set-Clipboard -Value $novos[0] } catch { }
   try { Start-Process explorer.exe $Destino } catch { }
 } else {
   Write-Host "Atualizado! No Chrome, abra o QuickFill e clique em 'Recarregar extensão' no aviso do topo." -ForegroundColor Green
   Write-Host "(ou em chrome://extensions clique no botão de recarregar do QuickFill)"
 }
-if ($ajudante) { Write-Host ""; Write-Host "Botão 'Atualizar agora' ativado: nas próximas versões é só clicar nele no QuickFill." -ForegroundColor Cyan }
 Write-Host ""
-Read-Host "Tecle Enter para fechar" | Out-Null
+Read-Host "Tecle Enter para fechar"

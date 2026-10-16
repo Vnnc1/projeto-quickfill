@@ -1,6 +1,6 @@
 import { parseDuration, humanize } from "./lib/duration.js";
 import { saveDraft, flushDraft, loadDraft, clearDraft, since } from "./lib/draft.js";
-import { ROLE, INSTALL_CMD } from "./lib/role.js";
+import { ROLE } from "./lib/role.js";
 import { loadAccent } from "./lib/theme.js";
 import { addDaysIso, isWeekendIso, DAY_MS } from "./lib/dates.js";
 import { totalOf, byIssue, streakAt, averageBefore, averageUntil, periodStats, weekCompare, countedDays, demandBoard, deployLabel, feitoLabel, DEMAND_GROUPS } from "./lib/devstats.js";
@@ -5415,30 +5415,6 @@ $("btnLayout").addEventListener("click", async () => {
 });
 
 /* ---------- Aviso de nova versão (repositório da equipe) ---------- */
-/** Comando de instalação com o id desta extensão: além de atualizar, libera o botão "Atualizar agora". */
-function activationCommand(base = INSTALL_CMD) {
-  if (!base) return "";
-  return base.replace('-Command "', `-Command "$env:QF_EXT_ID='${chrome.runtime.id}'; `);
-}
-
-/** Atualiza pelo ajudante nativo e recarrega a extensão (voltando no mesmo ponto). */
-async function updateNow(btn) {
-  btn.disabled = true;
-  const label = btn.textContent;
-  btn.textContent = "Atualizando…";
-  toast("Baixando e instalando a versão nova…", "info");
-  try {
-    await send("NATIVE_UPDATE");
-    await Promise.all([flushDraft(snapshot), saveView()]);
-    toast("Atualizado! Recarregando o QuickFill…", "ok");
-    setTimeout(() => chrome.runtime.reload(), 600);
-  } catch (e) {
-    btn.disabled = false;
-    btn.textContent = label;
-    toast(`Não deu para atualizar sozinho: ${e.message}. Use “Copiar comando de atualização”.`);
-  }
-}
-
 async function checkForUpdate() {
   try {
     const u = await send("CHECK_UPDATE", {});
@@ -5454,17 +5430,13 @@ async function checkForUpdate() {
       const url = u.guide || u.repo;
       return url ? openIssue(url, e) : toast("O update.json não tem o link.");
     };
-    // Com o ajudante ativado: "Atualizar agora" (um clique). Sem ele: copiar o comando — que também ativa o botão.
-    const nat = await send("NATIVE_PING").catch(() => ({ available: false }));
-    const cmd = activationCommand(u.installCommand);
-    $("btnUpdateHow").textContent = nat.available ? "Atualizar agora" : cmd ? "Copiar comando de atualização" : "Como atualizar";
-    $("btnUpdateHow").classList.toggle("primary", !!nat.available);
+    // Atualizar = colar um comando (Win+R ou PowerShell) e depois "Recarregar extensão"
+    $("btnUpdateHow").textContent = u.installCommand ? "Copiar comando de atualização" : "Como atualizar";
     $("btnUpdateHow").onclick = async () => {
-      if (nat.available) return updateNow($("btnUpdateHow"));
-      if (!cmd) return toast("Rode o atualizar-quickfill.bat de novo. Depois clique em “Recarregar extensão” que aparece aqui no topo.", "info");
-      const ok = await copyText(cmd);
-      toast(ok ? "Comando copiado! Tecle Win+R, cole (Ctrl+V) e Enter. Ao terminar, clique em “Recarregar extensão” aqui no topo — e das próximas vezes já aparece “Atualizar agora”."
-        : `Copie e rode: ${cmd}`, ok ? "ok" : "info");
+      if (!u.installCommand) return toast("Rode o atualizar-quickfill.bat de novo. Depois clique em “Recarregar extensão” que aparece aqui no topo.", "info");
+      const ok = await copyText(u.installCommand);
+      toast(ok ? "Comando copiado! Tecle Win+R, cole (Ctrl+V) e Enter. Ao terminar, clique em “Recarregar extensão” aqui no topo."
+        : `Copie e rode: ${u.installCommand}`, ok ? "ok" : "info");
     };
     $("updateClose").onclick = () => { box.classList.add("hidden"); chrome.storage.local.set({ updateDismissed: u.latest }).catch(() => {}); };
   } catch { /* sem aviso: segue normal */ }

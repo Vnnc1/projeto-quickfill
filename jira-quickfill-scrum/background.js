@@ -2809,8 +2809,6 @@ const HANDLERS = {
   FIGMA_FRAMES: (p) => figmaFrames(p),
   STATUS_MAP: () => statusMap(),
   CHECK_UPDATE: (p) => checkUpdate(p),
-  NATIVE_PING: () => nativePing(),
-  NATIVE_UPDATE: () => nativeUpdate(),
   SAVE_GOAL: (p) => saveGoal(p),
   TEAM_SAVE_PERSON: (p) => teamSavePerson(p),
   TEAM_USER_SEARCH: (p) => teamUserSearch(p),
@@ -2919,24 +2917,6 @@ chrome.commands.onCommand.addListener(async (command, tab) => {
     chrome.windows.create({ url: chrome.runtime.getURL("modal.html?standalone=1"), type: "popup", width: 1000, height: 860 });
   }
 });
-
-/* ---------- Botão "Atualizar agora" (ajudante nativo do Windows) ---------- */
-
-const NATIVE_HOST = "com.quickfill.updater";
-function nativeCall(msg) {
-  return new Promise((resolve, reject) => {
-    if (!chrome.runtime.sendNativeMessage) return reject(new Error("Atualização nativa indisponível neste navegador."));
-    chrome.runtime.sendNativeMessage(NATIVE_HOST, msg, (res) => {
-      const err = chrome.runtime.lastError?.message;
-      if (err) return reject(new Error(/not found|não encontrado|forbidden|proibido/i.test(err) ? "ajudante não ativado" : err));
-      if (!res?.ok) return reject(new Error(res?.error || "O ajudante não respondeu."));
-      resolve(res);
-    });
-  });
-}
-const nativePing = async () => { try { await nativeCall({ action: "ping" }); return { available: true }; } catch (e) { return { available: false, reason: e.message }; } };
-/** Baixa e instala a versão nova deste pacote pelo ajudante; quem chama recarrega a extensão em seguida. */
-const nativeUpdate = () => nativeCall({ action: "update", package: ROLE });
 
 /* ---------- Aviso de nova versão (repositório) ---------- */
 

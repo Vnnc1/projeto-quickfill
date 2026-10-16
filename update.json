@@ -1,29 +1,29 @@
 {
-  "version": "4.2.0",
+  "version": "4.1.0",
   "private": false,
   "repo": "https://github.com/Vnnc1/projeto-quickfill",
   "installCommand": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"irm https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/quickfill.ps1 | iex\"",
   "guide": "https://github.com/Vnnc1/projeto-quickfill#readme",
   "date": "2026-10-16",
-  "notes": "Novo: botão “Atualizar agora” (ative uma vez em Opções › Atualização com um clique).",
+  "notes": "Instalação e atualização em um clique (repositório público).",
   "packages": {
     "qa": {
-      "version": "4.2.0",
+      "version": "4.1.0",
       "folder": "jira-quickfill-qa",
       "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-qa.zip"
     },
     "dev": {
-      "version": "4.2.0",
+      "version": "4.1.0",
       "folder": "jira-quickfill-dev",
       "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-dev.zip"
     },
     "scrum": {
-      "version": "4.2.0",
+      "version": "4.1.0",
       "folder": "jira-quickfill-scrum",
       "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-scrum.zip"
     },
     "design": {
-      "version": "4.2.0",
+      "version": "4.1.0",
       "folder": "jira-quickfill-design",
       "download": "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/jira-quickfill-design.zip"
     }

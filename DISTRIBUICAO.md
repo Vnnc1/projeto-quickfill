@@ -12,8 +12,7 @@ Não precisa mandar arquivo nenhum. O instalador sempre baixa a versão mais nov
 | Quando | O que a pessoa faz |
 |---|---|
 | **Primeira vez** | Win+R › cola o comando do README › escolhe o perfil › carrega a pasta (já copiada) em `chrome://extensions` › preenche as Opções |
-| **Ativar o botão (uma vez)** | Opções › **Ativar atualização com um clique** › Win+R › Ctrl+V › Enter |
-| **Versão nova** | Clica em **Atualizar agora** no aviso do QuickFill (sem ativar: **Copiar comando de atualização** › Win+R › Ctrl+V › Enter › **Recarregar extensão**) |
+| **Versão nova** | Clica em **Copiar comando de atualização** no aviso do QuickFill › Win+R › Ctrl+V › Enter › **Recarregar extensão** |
 
 - A extensão fica em `Documentos\QuickFill\<pasta>` (ex.: `C:\Users\Fernanda\Documents\QuickFill\jira-quickfill-dev`).
   Se o Documentos estiver no OneDrive, vai para lá.
@@ -28,19 +27,6 @@ Não precisa mandar arquivo nenhum. O instalador sempre baixa a versão mais nov
 4. Faça `git add -A`, `git commit -m "QuickFill 4.2.0"` e `git push`.
 
 Em até 6 horas, quem abrir o QuickFill vê o aviso de versão nova.
-
-## Como funciona o botão "Atualizar agora"
-
-O Chrome não deixa uma extensão alterar os próprios arquivos. Por isso o instalador registra um pequeno
-**ajudante** do Chrome (*Native Messaging*):
-- fica em `Documentos\QuickFill\.ajudante` e vale só para aquele usuário do Windows, sem administrador;
-- é liberado apenas para os QuickFill que pediram;
-- ao clicar no botão, a extensão chama o ajudante, que roda o mesmo instalador em modo silencioso e baixa a
-  versão nova do repositório; em seguida a extensão se recarrega e volta onde a pessoa estava.
-
-O registro da última atualização fica em `Documentos\QuickFill\.ajudante\ultima-atualizacao.log`.
-Para desativar, apague a pasta `.ajudante` e a chave
-`HKCU\Software\Google\Chrome\NativeMessagingHosts\com.quickfill.updater`.
 
 ## Arquivos de publicação (gerados pelo `npm run zip`)
 

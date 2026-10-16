@@ -1,4 +1,4 @@
-import { ROLE, INSTALL_CMD } from "./lib/role.js";
+import { ROLE } from "./lib/role.js";
 import { PALETTE, ROLE_ACCENT, applyAccent, loadAccent } from "./lib/theme.js";
 
 const ROLE_NAME = { qa: "QuickFill QA", dev: "QuickFill DEV", scrum: "QuickFill SCRUM", design: "QuickFill DESIGN" }[ROLE] || "QuickFill";
@@ -365,21 +365,3 @@ function renderSwatches() {
   custom.addEventListener("change", () => pick(custom.value.toLowerCase()));
   box.appendChild(custom);
 }
-
-/* ---------- Atualização com um clique (ajudante nativo) ---------- */
-
-function nativeStatus() {
-  chrome.runtime.sendMessage({ type: "NATIVE_PING" }, (res) => {
-    const ok = !chrome.runtime.lastError && res?.ok && res.data?.available;
-    $("nativeStatus").textContent = ok ? "✓ ativada nesta máquina" : "— ainda não ativada";
-    $("nativeStatus").style.color = ok ? "var(--ok)" : "";
-    $("btnNative").textContent = ok ? "Ativar de novo (copiar comando)" : "Ativar atualização com um clique";
-  });
-}
-$("btnNative").addEventListener("click", async () => {
-  if (!INSTALL_CMD) return msg("Este pacote não tem o endereço do repositório (release.config.json).", true);
-  const cmd = INSTALL_CMD.replace('-Command "', `-Command "$env:QF_EXT_ID='${chrome.runtime.id}'; `);
-  try { await navigator.clipboard.writeText(cmd); msg("Comando copiado! Tecle Win+R, cole (Ctrl+V) e Enter. Depois volte aqui e recarregue a página."); }
-  catch { prompt("Copie o comando e cole no Win+R:", cmd); }
-});
-nativeStatus();

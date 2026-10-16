@@ -9,5 +9,3 @@
 export const ROLE = "dev";
 /** update.json do repositório da equipe (aviso de nova versão). Vazio = sem aviso. */
 export const UPDATE_URL = "https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/update.json";
-/** Comando de instalação/atualização (Win+R). Com QF_EXT_ID também ativa o botão "Atualizar agora". */
-export const INSTALL_CMD = "powershell -NoProfile -ExecutionPolicy Bypass -Command \"irm https://raw.githubusercontent.com/Vnnc1/projeto-quickfill/master/dist/quickfill.ps1 | iex\"";
